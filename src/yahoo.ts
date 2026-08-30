@@ -47,6 +47,12 @@ function firstAddress(message: FetchMessageObject): { name: string; address: str
   };
 }
 
+function toIsoDate(value: string | Date | undefined): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 async function toSummary(
   message: FetchMessageObject,
   folder: string,
@@ -62,7 +68,7 @@ async function toSummary(
     senderName: sender.name,
     senderEmail: sender.address,
     subject: message.envelope?.subject ?? '(no subject)',
-    receivedAt: (message.internalDate ?? message.envelope?.date)?.toISOString() ?? null,
+    receivedAt: toIsoDate(message.internalDate ?? message.envelope?.date),
     unread: !message.flags?.has('\\Seen'),
     hasAttachments: (parsed?.attachments.length ?? 0) > 0,
     preview: truncateSanitized(text, maxPreviewChars),
@@ -118,7 +124,8 @@ export class YahooMailReader {
       if (options.since) criteria.since = options.since;
       if (options.query) criteria.text = options.query;
 
-      const uids = await client.search(criteria, { uid: true });
+      const searchResult = await client.search(criteria, { uid: true });
+      const uids = Array.isArray(searchResult) ? searchResult : [];
       const selected = uids.slice(-limit).reverse();
       const results: SafeMailSummary[] = [];
 
