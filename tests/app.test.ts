@@ -17,7 +17,7 @@ function createTestApp() {
       ALLOWED_HOSTS: "localhost,127.0.0.1",
     }),
     {
-      oauthStore: {},
+      oauthStore: { close: async () => undefined },
       createMcpServer: () => {
         throw new Error("MCP server must not be created for a health request");
       },
@@ -33,5 +33,11 @@ describe("application", () => {
     expect(JSON.stringify(response.body)).not.toMatch(
       /yahoo|redis|secret|email/i,
     );
+  });
+
+  it("rejects unauthenticated MCP requests", async () => {
+    const response = await request(createTestApp()).post("/mcp").send({});
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ error: "unauthorized" });
   });
 });

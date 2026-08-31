@@ -6,8 +6,10 @@ import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import type { AppConfig } from "./config.js";
 
-/** OAuth storage is intentionally opaque until its durable implementation is added. */
-export type OAuthStore = object;
+/** The Task 2 OAuth store contract extends this lifecycle boundary. */
+export interface OAuthStore {
+  close(): Promise<void>;
+}
 
 export interface AppDependencies {
   oauthStore: OAuthStore;
@@ -28,6 +30,15 @@ function enforceBodyLimit(
     }
   }
   next();
+}
+
+/**
+ * Fails closed until Task 5 replaces this boundary with OAuth access-token
+ * validation backed by the injected OAuth store.
+ */
+function rejectUntilOAuth(_req: Request, res: Response): void {
+  res.setHeader("WWW-Authenticate", "Bearer");
+  res.status(401).json({ error: "unauthorized" });
 }
 
 export function createApp(
@@ -68,6 +79,7 @@ export function createApp(
     "/mcp",
     limiter,
     enforceBodyLimit,
+    rejectUntilOAuth,
     (req, res) => void nodeHandler(req, res, req.body),
   );
 

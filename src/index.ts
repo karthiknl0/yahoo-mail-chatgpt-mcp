@@ -1,16 +1,16 @@
 import { createServer } from "node:http";
-import { createClient } from "redis";
 import { createApp, type OAuthStore } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createYahooMcpServer } from "./mcp.js";
 
 const config = loadConfig();
-const redis = createClient({ url: config.redisUrl });
-
-await redis.connect();
+// Redis becomes a live dependency with the durable OAuthStore in Task 2.
+const oauthStore: OAuthStore = {
+  close: async () => undefined,
+};
 
 const app = createApp(config, {
-  oauthStore: {} as OAuthStore,
+  oauthStore,
   createMcpServer: createYahooMcpServer,
 });
 const httpServer = createServer(app);
@@ -32,7 +32,7 @@ async function shutdown(signal: string): Promise<void> {
   forceExit.unref();
 
   httpServer.close(async () => {
-    await redis.quit();
+    await oauthStore.close();
     clearTimeout(forceExit);
     process.exit(0);
   });
