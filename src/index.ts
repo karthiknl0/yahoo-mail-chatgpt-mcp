@@ -1,12 +1,19 @@
 import { createServer } from "node:http";
+import { createClient } from "redis";
 import { createApp, type OAuthStore } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createYahooMcpServer } from "./mcp.js";
 
 const config = loadConfig();
-// Redis becomes a live dependency with the durable OAuthStore in Task 2.
+const redis = createClient({ url: config.redisUrl });
+
+await redis.connect();
+
+// Task 2 extends this lifecycle boundary with the durable OAuth store contract.
 const oauthStore: OAuthStore = {
-  close: async () => undefined,
+  close: async () => {
+    await redis.quit();
+  },
 };
 
 const app = createApp(config, {
