@@ -46,13 +46,10 @@ export interface RefreshTokenRecord {
 export interface RotateRefreshTokenInput {
   readonly oldDigest: string;
   readonly newDigest: string;
-  readonly familyId: string;
-  readonly clientId: string;
-  readonly resource: string;
-  readonly scope: string;
-  readonly refreshTtlSeconds: number;
-  readonly familyTtlSeconds: number;
 }
 
 export type RotateRefreshTokenResult =
-  "rotated" | "missing" | "replayed" | "revoked";
+  | { readonly status: "rotated"; readonly record: RefreshTokenRecord }
+  | { readonly status: "replayed"; readonly record: RefreshTokenRecord }
+  | { readonly status: "revoked"; readonly record: RefreshTokenRecord }
+  | { readonly status: "missing" };

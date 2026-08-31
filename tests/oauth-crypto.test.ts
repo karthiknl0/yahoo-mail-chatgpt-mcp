@@ -69,4 +69,70 @@ describe("OAuth cryptography", () => {
     ).toBe(false);
     expect(await verifyPassphrase("correct horse", "not-a-digest")).toBe(false);
   });
+
+  it("rejects non-canonical or unbounded scrypt fields", async () => {
+    const derive = (salt: Buffer) =>
+      scryptSync("correct horse", salt, 32, {
+        N: 16_384,
+        r: 8,
+        p: 1,
+        maxmem: 64 * 1024 * 1024,
+      });
+    const largeSalt = Buffer.alloc(65, 65);
+    const largeDigest = derive(largeSalt).toString("base64url");
+    const canonicalSalt = Buffer.from("12345678");
+    const canonicalSaltText = canonicalSalt.toString("base64url");
+    const canonicalDigest = derive(canonicalSalt).toString("base64url");
+    const alphabet =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const nonCanonicalSalt = `${canonicalSaltText.slice(0, -1)}${alphabet[alphabet.indexOf(canonicalSaltText.at(-1) ?? "") + 1]}`;
+    const nonCanonicalDigest = `${canonicalDigest.slice(0, -1)}${alphabet[alphabet.indexOf(canonicalDigest.at(-1) ?? "") + 1]}`;
+
+    expect(largeSalt.toString("base64url")).toHaveLength(87);
+    expect(
+      await verifyPassphrase(
+        "correct horse",
+        `scrypt$16384$8$1$${largeSalt.toString("base64url")}$${largeDigest}`,
+      ),
+    ).toBe(false);
+    expect(Buffer.from(nonCanonicalSalt, "base64url")).toEqual(canonicalSalt);
+    expect(
+      await verifyPassphrase(
+        "correct horse",
+        `scrypt$16384$8$1$${nonCanonicalSalt}$${canonicalDigest}`,
+      ),
+    ).toBe(false);
+    expect(Buffer.from(nonCanonicalDigest, "base64url")).toEqual(
+      Buffer.from(canonicalDigest, "base64url"),
+    );
+    expect(
+      await verifyPassphrase(
+        "correct horse",
+        `scrypt$16384$8$1$${canonicalSaltText}$${nonCanonicalDigest}`,
+      ),
+    ).toBe(false);
+
+    const salt = Buffer.from("salt-for-oauth-tests");
+    const derived = scryptSync("correct horse", salt, 32, {
+      N: 16_384,
+      r: 8,
+      p: 1,
+      maxmem: 64 * 1024 * 1024,
+    });
+    const saltText = salt.toString("base64url");
+    const digestText = derived.toString("base64url");
+
+    expect(
+      await verifyPassphrase(
+        "correct horse",
+        `scrypt$16384$8$1$${saltText}$${digestText.slice(0, 42)}`,
+      ),
+    ).toBe(false);
+    expect(
+      await verifyPassphrase(
+        "correct horse",
+        `scrypt$16384$8$1$${saltText}$${digestText}=`,
+      ),
+    ).toBe(false);
+  });
 });

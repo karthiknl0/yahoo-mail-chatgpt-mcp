@@ -46,13 +46,9 @@ const refreshToken: RefreshTokenRecord = {
 const rotation: RotateRefreshTokenInput = {
   oldDigest: "old-digest",
   newDigest: "new-digest",
-  familyId: refreshToken.familyId,
-  clientId: refreshToken.clientId,
-  resource: refreshToken.resource,
-  scope: refreshToken.scope,
-  refreshTtlSeconds: 30 * 24 * 60 * 60,
-  familyTtlSeconds: 30 * 24 * 60 * 60,
 };
+
+const refreshTtlSeconds = 30 * 24 * 60 * 60;
 
 describe("OAuth store contract", () => {
   it("consumes an authorization transaction exactly once", async () => {
@@ -97,26 +93,114 @@ describe("OAuth store contract", () => {
 
   it("marks refresh-token replay and revokes the whole family", async () => {
     const store = new InMemoryOAuthStore(1_700_000_000_000);
-    await store.seedRefreshToken(
-      rotation.oldDigest,
-      refreshToken,
-      rotation.refreshTtlSeconds,
-    );
+    expect(
+      await store.createRefreshToken(
+        rotation.oldDigest,
+        refreshToken,
+        refreshTtlSeconds,
+      ),
+    ).toBe(true);
+    expect(
+      await store.createRefreshToken(
+        rotation.oldDigest,
+        refreshToken,
+        refreshTtlSeconds,
+      ),
+    ).toBe(false);
 
-    expect(await store.rotateRefreshToken(rotation)).toBe("rotated");
-    expect(await store.rotateRefreshToken(rotation)).toBe("replayed");
+    expect(await store.rotateRefreshToken(rotation)).toEqual({
+      status: "rotated",
+      record: refreshToken,
+    });
+    expect(await store.rotateRefreshToken(rotation)).toEqual({
+      status: "replayed",
+      record: refreshToken,
+    });
     expect(
       await store.rotateRefreshToken({
-        ...rotation,
         oldDigest: rotation.newDigest,
         newDigest: "third-digest",
       }),
-    ).toBe("revoked");
+    ).toEqual({ status: "revoked", record: refreshToken });
+  });
+
+  it("derives refresh metadata from storage when caller metadata mismatches", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createRefreshToken(
+      rotation.oldDigest,
+      refreshToken,
+      refreshTtlSeconds,
+    );
+    const mismatchedCallerInput = {
+      ...rotation,
+      familyId: "wrong-family",
+      clientId: "wrong-client",
+      resource: "https://wrong.example/mcp",
+      scope: "wrong:scope",
+    };
+
+    expect(await store.rotateRefreshToken(mismatchedCallerInput)).toEqual({
+      status: "rotated",
+      record: refreshToken,
+    });
+  });
+
+  it("rejects a replacement digest already owned by a different family", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    const otherFamily = { ...refreshToken, familyId: "family-2" };
+    await store.createRefreshToken(
+      rotation.oldDigest,
+      refreshToken,
+      refreshTtlSeconds,
+    );
+    await store.createRefreshToken(
+      rotation.newDigest,
+      otherFamily,
+      refreshTtlSeconds,
+    );
+
+    expect(await store.rotateRefreshToken(rotation)).toEqual({
+      status: "missing",
+    });
+    expect(
+      await store.rotateRefreshToken({
+        oldDigest: rotation.oldDigest,
+        newDigest: "family-1-replacement",
+      }),
+    ).toEqual({ status: "rotated", record: refreshToken });
+    expect(
+      await store.rotateRefreshToken({
+        oldDigest: rotation.newDigest,
+        newDigest: "family-2-replacement",
+      }),
+    ).toEqual({ status: "rotated", record: otherFamily });
+  });
+
+  it("keeps refresh replacements within the original family lifetime", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createRefreshToken(
+      rotation.oldDigest,
+      refreshToken,
+      refreshTtlSeconds,
+    );
+
+    store.advanceBy(29 * 24 * 60 * 60 * 1_000);
+    expect(await store.rotateRefreshToken(rotation)).toEqual({
+      status: "rotated",
+      record: refreshToken,
+    });
+    store.advanceBy(24 * 60 * 60 * 1_000);
+    expect(
+      await store.rotateRefreshToken({
+        oldDigest: rotation.newDigest,
+        newDigest: "third-digest",
+      }),
+    ).toEqual({ status: "missing" });
   });
 });
 
 type RedisCall =
-  | { method: "set"; key: string; value: string; ttl?: number }
+  | { method: "set"; key: string; value: string; ttl?: number; nx?: boolean }
   | { method: "get" | "getDel"; key: string }
   | { method: "eval"; keys: string[]; arguments: string[] };
 
@@ -129,8 +213,8 @@ class StrictFakeRedisClient {
   async set(
     key: string,
     value: string,
-    options?: { EX: number },
-  ): Promise<string> {
+    options?: { EX: number; NX?: boolean },
+  ): Promise<string | null> {
     if (options && (!Number.isInteger(options.EX) || options.EX <= 0)) {
       throw new Error("invalid SET expiry");
     }
@@ -139,7 +223,9 @@ class StrictFakeRedisClient {
       key,
       value,
       ...(options ? { ttl: options.EX } : {}),
+      ...(options?.NX ? { nx: true } : {}),
     });
+    if (options?.NX && this.values.has(key)) return null;
     this.values.set(key, value);
     return "OK";
   }
@@ -213,10 +299,16 @@ describe("RedisOAuthStore command boundaries", () => {
 
   it("rotates refresh tokens in one Lua command with family-scoped keys", async () => {
     const fake = new StrictFakeRedisClient();
-    fake.evalReply = "rotated";
+    fake.evalReply = JSON.stringify({
+      status: "rotated",
+      record: refreshToken,
+    });
     const store = redisStore(fake);
 
-    expect(await store.rotateRefreshToken(rotation)).toBe("rotated");
+    expect(await store.rotateRefreshToken(rotation)).toEqual({
+      status: "rotated",
+      record: refreshToken,
+    });
     expect(fake.calls).toEqual([
       {
         method: "eval",
@@ -224,14 +316,44 @@ describe("RedisOAuthStore command boundaries", () => {
           "refresh:old-digest",
           "refresh-used:old-digest",
           "refresh:new-digest",
-          "family-revoked:family-1",
         ],
-        arguments: [
-          JSON.stringify(refreshToken),
-          "2592000",
-          "2592000",
-          "family-1",
-        ],
+        arguments: ["family-revoked:"],
+      },
+    ]);
+  });
+
+  it("issues the initial refresh token atomically with its fixed expiry", async () => {
+    const fake = new StrictFakeRedisClient();
+    const store = redisStore(fake);
+
+    expect(
+      await store.createRefreshToken(
+        "initial-digest",
+        refreshToken,
+        refreshTtlSeconds,
+      ),
+    ).toBe(true);
+    expect(
+      await store.createRefreshToken(
+        "initial-digest",
+        refreshToken,
+        refreshTtlSeconds,
+      ),
+    ).toBe(false);
+    expect(fake.calls).toEqual([
+      {
+        method: "set",
+        key: "refresh:initial-digest",
+        value: JSON.stringify(refreshToken),
+        ttl: refreshTtlSeconds,
+        nx: true,
+      },
+      {
+        method: "set",
+        key: "refresh:initial-digest",
+        value: JSON.stringify(refreshToken),
+        ttl: refreshTtlSeconds,
+        nx: true,
       },
     ]);
   });

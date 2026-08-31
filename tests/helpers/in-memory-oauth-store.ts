@@ -32,7 +32,10 @@ export class InMemoryOAuthStore implements OAuthStore {
     string,
     ExpiringValue<RefreshTokenRecord>
   >();
-  private readonly usedRefreshTokens = new Map<string, ExpiringValue<string>>();
+  private readonly usedRefreshTokens = new Map<
+    string,
+    ExpiringValue<RefreshTokenRecord>
+  >();
   private readonly revokedFamilies = new Map<string, number>();
   private readonly rateLimits = new Map<string, ExpiringValue<number>>();
   private currentTime: number;
@@ -50,7 +53,7 @@ export class InMemoryOAuthStore implements OAuthStore {
     value: RefreshTokenRecord,
     ttlSeconds: number,
   ): Promise<void> {
-    this.refreshTokens.set(digest, this.expiring(value, ttlSeconds));
+    await this.createRefreshToken(digest, value, ttlSeconds);
   }
 
   async registerClient(client: RegisteredClient): Promise<void> {
@@ -101,51 +104,55 @@ export class InMemoryOAuthStore implements OAuthStore {
     return this.read(this.accessTokens, digest);
   }
 
+  async createRefreshToken(
+    digest: string,
+    value: RefreshTokenRecord,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    if (this.read(this.refreshTokens, digest)) return false;
+    const expiresAt = Math.min(
+      value.expiresAt,
+      this.currentTime + ttlSeconds * 1_000,
+    );
+    if (expiresAt <= this.currentTime) return false;
+    this.refreshTokens.set(digest, {
+      value: structuredClone({ ...value, expiresAt }),
+      expiresAt,
+    });
+    return true;
+  }
+
   async rotateRefreshToken(
     input: RotateRefreshTokenInput,
   ): Promise<RotateRefreshTokenResult> {
-    if (this.isFamilyRevoked(input.familyId)) return "revoked";
-
     const oldRecord = this.read(this.refreshTokens, input.oldDigest);
     if (!oldRecord) {
-      const usedFamilyId = this.read(this.usedRefreshTokens, input.oldDigest);
-      if (!usedFamilyId) return "missing";
-
-      this.revokedFamilies.set(
-        usedFamilyId,
-        this.currentTime + input.familyTtlSeconds * 1_000,
-      );
-      return "replayed";
+      const usedRecord = this.read(this.usedRefreshTokens, input.oldDigest);
+      if (!usedRecord) return { status: "missing" };
+      if (this.isFamilyRevoked(usedRecord.familyId)) {
+        return { status: "revoked", record: usedRecord };
+      }
+      this.revokedFamilies.set(usedRecord.familyId, usedRecord.expiresAt);
+      return { status: "replayed", record: usedRecord };
     }
 
-    if (
-      oldRecord.familyId !== input.familyId ||
-      oldRecord.clientId !== input.clientId ||
-      oldRecord.resource !== input.resource ||
-      oldRecord.scope !== input.scope
-    ) {
-      return "missing";
+    if (this.isFamilyRevoked(oldRecord.familyId)) {
+      return { status: "revoked", record: oldRecord };
+    }
+    if (this.read(this.refreshTokens, input.newDigest)) {
+      return { status: "missing" };
     }
 
     this.refreshTokens.delete(input.oldDigest);
-    this.usedRefreshTokens.set(
-      input.oldDigest,
-      this.expiring(input.familyId, input.familyTtlSeconds),
-    );
-    this.refreshTokens.set(
-      input.newDigest,
-      this.expiring(
-        {
-          familyId: input.familyId,
-          clientId: input.clientId,
-          resource: input.resource,
-          scope: input.scope,
-          expiresAt: this.currentTime + input.refreshTtlSeconds * 1_000,
-        },
-        input.refreshTtlSeconds,
-      ),
-    );
-    return "rotated";
+    this.usedRefreshTokens.set(input.oldDigest, {
+      value: structuredClone(oldRecord),
+      expiresAt: oldRecord.expiresAt,
+    });
+    this.refreshTokens.set(input.newDigest, {
+      value: structuredClone(oldRecord),
+      expiresAt: oldRecord.expiresAt,
+    });
+    return { status: "rotated", record: oldRecord };
   }
 
   async incrementRateLimit(key: string, ttlSeconds: number): Promise<number> {

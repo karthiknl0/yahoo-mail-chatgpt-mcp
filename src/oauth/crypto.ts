@@ -18,10 +18,25 @@ const scrypt = promisify(nodeScrypt) as (
 const SCRYPT_MAX_MEMORY = 64 * 1024 * 1024;
 const SCRYPT_KEY_LENGTH = 32;
 const SCRYPT_PATTERN =
-  /^scrypt\$16384\$8\$1\$([A-Za-z0-9_-]+)\$([A-Za-z0-9_-]+)$/;
+  /^scrypt\$16384\$8\$1\$([A-Za-z0-9_-]{11,86})\$([A-Za-z0-9_-]{43})$/;
+const BASE64URL_TWO_CHARACTER_ENDINGS = /^[AQgw]$/;
+const BASE64URL_THREE_CHARACTER_ENDINGS = /^[AEIMQUYcgkosw048]$/;
 
 function equalBuffers(left: Buffer, right: Buffer): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function isCanonicalBase64url(value: string): boolean {
+  const remainder = value.length % 4;
+  const finalCharacter = value.at(-1);
+  if (!finalCharacter || remainder === 1) return false;
+  if (remainder === 2) {
+    return BASE64URL_TWO_CHARACTER_ENDINGS.test(finalCharacter);
+  }
+  if (remainder === 3) {
+    return BASE64URL_THREE_CHARACTER_ENDINGS.test(finalCharacter);
+  }
+  return true;
 }
 
 export function randomToken(): string {
@@ -54,11 +69,20 @@ export async function verifyPassphrase(
   const saltText = match[1];
   const digestText = match[2];
   if (!saltText || !digestText) return false;
+  if (!isCanonicalBase64url(saltText) || !isCanonicalBase64url(digestText)) {
+    return false;
+  }
 
   try {
     const salt = Buffer.from(saltText, "base64url");
     const expected = Buffer.from(digestText, "base64url");
-    if (salt.length === 0 || expected.length !== SCRYPT_KEY_LENGTH)
+    if (
+      salt.length < 8 ||
+      salt.length > 64 ||
+      expected.length !== SCRYPT_KEY_LENGTH ||
+      salt.toString("base64url") !== saltText ||
+      expected.toString("base64url") !== digestText
+    )
       return false;
 
     const actual = await scrypt(passphrase, salt, SCRYPT_KEY_LENGTH, {

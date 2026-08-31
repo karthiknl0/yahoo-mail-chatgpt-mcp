@@ -2,6 +2,7 @@ import type {
   AccessTokenRecord,
   AuthorizationCodeRecord,
   AuthorizationTransaction,
+  RefreshTokenRecord,
   RegisteredClient,
   RotateRefreshTokenInput,
   RotateRefreshTokenResult,
@@ -30,6 +31,11 @@ export interface OAuthStore {
     ttlSeconds: number,
   ): Promise<void>;
   getAccessToken(digest: string): Promise<AccessTokenRecord | null>;
+  createRefreshToken(
+    digest: string,
+    value: RefreshTokenRecord,
+    ttlSeconds: number,
+  ): Promise<boolean>;
   rotateRefreshToken(
     input: RotateRefreshTokenInput,
   ): Promise<RotateRefreshTokenResult>;

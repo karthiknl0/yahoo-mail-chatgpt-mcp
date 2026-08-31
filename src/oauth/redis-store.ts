@@ -13,36 +13,73 @@ import type {
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
 
 const ROTATE_REFRESH_TOKEN_SCRIPT = `
-if redis.call('EXISTS', KEYS[4]) == 1 then
-  return 'revoked'
+local function result(status, record)
+  if record then
+    return cjson.encode({ status = status, record = record })
+  end
+  return cjson.encode({ status = status })
 end
 
 local oldRecordJson = redis.call('GET', KEYS[1])
 if not oldRecordJson then
-  local usedFamilyId = redis.call('GET', KEYS[2])
-  if not usedFamilyId then
-    return 'missing'
+  local usedRecordJson = redis.call('GET', KEYS[2])
+  if not usedRecordJson then
+    return result('missing')
   end
-  if usedFamilyId ~= ARGV[4] then
-    return 'missing'
+
+  local usedRecord = cjson.decode(usedRecordJson)
+  local revocationKey = ARGV[1] .. usedRecord.familyId
+  if redis.call('EXISTS', revocationKey) == 1 then
+    return result('revoked', usedRecord)
   end
-  redis.call('SET', KEYS[4], '1', 'EX', ARGV[3])
-  return 'replayed'
+
+  local redisTime = redis.call('TIME')
+  local nowMillis = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+  local remainingMillis = math.min(
+    tonumber(usedRecord.expiresAt) - nowMillis,
+    redis.call('PTTL', KEYS[2])
+  )
+  if remainingMillis <= 0 then
+    redis.call('DEL', KEYS[2])
+    return result('missing')
+  end
+
+  redis.call('SET', revocationKey, '1', 'PX', math.floor(remainingMillis))
+  return result('replayed', usedRecord)
 end
 
 local oldRecord = cjson.decode(oldRecordJson)
-local newRecord = cjson.decode(ARGV[1])
-if oldRecord.familyId ~= newRecord.familyId
-  or oldRecord.clientId ~= newRecord.clientId
-  or oldRecord.resource ~= newRecord.resource
-  or oldRecord.scope ~= newRecord.scope then
-  return 'missing'
+local revocationKey = ARGV[1] .. oldRecord.familyId
+if redis.call('EXISTS', revocationKey) == 1 then
+  return result('revoked', oldRecord)
+end
+
+local redisTime = redis.call('TIME')
+local nowMillis = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local remainingMillis = math.min(
+  tonumber(oldRecord.expiresAt) - nowMillis,
+  redis.call('PTTL', KEYS[1])
+)
+if remainingMillis <= 0 then
+  redis.call('DEL', KEYS[1])
+  return result('missing')
+end
+
+local created = redis.call(
+  'SET',
+  KEYS[3],
+  oldRecordJson,
+  'PX',
+  math.floor(remainingMillis),
+  'NX'
+)
+if not created then
+  return result('missing')
 end
 
 redis.call('DEL', KEYS[1])
-redis.call('SET', KEYS[2], ARGV[4], 'EX', ARGV[3])
-redis.call('SET', KEYS[3], ARGV[1], 'EX', ARGV[2])
-return 'rotated'
+redis.call('SET', KEYS[2], oldRecordJson, 'PX', math.floor(remainingMillis))
+return result('rotated', oldRecord)
 `;
 
 const INCREMENT_RATE_LIMIT_SCRIPT = `
@@ -71,17 +108,54 @@ function assertTtl(ttlSeconds: number, maximum = THIRTY_DAYS_SECONDS): void {
   }
 }
 
-function refreshRecord(
-  input: RotateRefreshTokenInput,
+function boundedRefreshRecord(
+  value: RefreshTokenRecord,
+  ttlSeconds: number,
   now: number,
-): RefreshTokenRecord {
+): { record: RefreshTokenRecord; ttlSeconds: number } | null {
+  assertTtl(ttlSeconds);
+  if (!Number.isSafeInteger(value.expiresAt)) return null;
+  const expiresAt = Math.min(value.expiresAt, now + ttlSeconds * 1_000);
+  const remainingSeconds = Math.floor((expiresAt - now) / 1_000);
+  if (remainingSeconds <= 0) return null;
   return {
-    familyId: input.familyId,
-    clientId: input.clientId,
-    resource: input.resource,
-    scope: input.scope,
-    expiresAt: now + input.refreshTtlSeconds * 1_000,
+    record: { ...value, expiresAt },
+    ttlSeconds: remainingSeconds,
   };
+}
+
+function isRefreshTokenRecord(value: unknown): value is RefreshTokenRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.familyId === "string" &&
+    typeof record.clientId === "string" &&
+    typeof record.resource === "string" &&
+    typeof record.scope === "string" &&
+    typeof record.expiresAt === "number" &&
+    Number.isSafeInteger(record.expiresAt)
+  );
+}
+
+function parseRotationResult(value: unknown): RotateRefreshTokenResult {
+  if (typeof value !== "string") {
+    throw new Error("Unexpected OAuth refresh rotation result");
+  }
+  const parsed = JSON.parse(value) as unknown;
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Unexpected OAuth refresh rotation result");
+  }
+  const result = parsed as Record<string, unknown>;
+  if (result.status === "missing") return { status: "missing" };
+  if (
+    (result.status === "rotated" ||
+      result.status === "replayed" ||
+      result.status === "revoked") &&
+    isRefreshTokenRecord(result.record)
+  ) {
+    return { status: result.status, record: result.record };
+  }
+  throw new Error("Unexpected OAuth refresh rotation result");
 }
 
 export class RedisOAuthStore implements OAuthStore {
@@ -146,36 +220,33 @@ export class RedisOAuthStore implements OAuthStore {
     );
   }
 
+  async createRefreshToken(
+    digest: string,
+    value: RefreshTokenRecord,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    const bounded = boundedRefreshRecord(value, ttlSeconds, this.now());
+    if (!bounded) return false;
+    const result = await this.client.set(
+      `refresh:${digest}`,
+      serialize(bounded.record),
+      { EX: bounded.ttlSeconds, NX: true },
+    );
+    return result === "OK";
+  }
+
   async rotateRefreshToken(
     input: RotateRefreshTokenInput,
   ): Promise<RotateRefreshTokenResult> {
-    assertTtl(input.refreshTtlSeconds);
-    assertTtl(input.familyTtlSeconds);
-    const nextRecord = refreshRecord(input, this.now());
     const result = await this.client.eval(ROTATE_REFRESH_TOKEN_SCRIPT, {
       keys: [
         `refresh:${input.oldDigest}`,
         `refresh-used:${input.oldDigest}`,
         `refresh:${input.newDigest}`,
-        `family-revoked:${input.familyId}`,
       ],
-      arguments: [
-        serialize(nextRecord),
-        String(input.refreshTtlSeconds),
-        String(input.familyTtlSeconds),
-        input.familyId,
-      ],
+      arguments: ["family-revoked:"],
     });
-
-    if (
-      result === "rotated" ||
-      result === "missing" ||
-      result === "replayed" ||
-      result === "revoked"
-    ) {
-      return result;
-    }
-    throw new Error("Unexpected OAuth refresh rotation result");
+    return parseRotationResult(result);
   }
 
   async incrementRateLimit(key: string, ttlSeconds: number): Promise<number> {
