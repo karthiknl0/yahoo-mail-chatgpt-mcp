@@ -65,13 +65,13 @@ async function toSummary(
   message: FetchMessageObject,
   folder: string,
   maxPreviewChars: number,
+  signal: AbortSignal,
 ): Promise<SafeMailSummary> {
-  const parsed = message.source
-    ? await simpleParser(message.source)
-    : undefined;
+  const parsed = await parseMail(message, signal);
   const sender = firstAddress(message);
   const text = parsed?.text ?? parsed?.html?.toString() ?? "";
 
+  throwIfAborted(signal);
   return {
     uid: message.uid,
     folder: truncateMailDisplayText(folder, MAX_MAIL_DISPLAY_CHARS),
@@ -111,10 +111,22 @@ async function awaitAbortable<T>(
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(abortError(signal));
     signal.addEventListener("abort", onAbort, { once: true });
-    operation.then(resolve, reject).finally(() => {
-      signal.removeEventListener("abort", onAbort);
-    });
+    operation
+      .then((value) => {
+        if (signal.aborted) reject(abortError(signal));
+        else resolve(value);
+      }, reject)
+      .finally(() => {
+        signal.removeEventListener("abort", onAbort);
+      });
   });
+}
+
+async function parseMail(message: FetchMessageObject, signal: AbortSignal) {
+  if (!message.source) return undefined;
+  const parsed = await awaitAbortable(simpleParser(message.source), signal);
+  throwIfAborted(signal);
+  return parsed;
 }
 
 export class YahooMailReader {
@@ -241,7 +253,12 @@ export class YahooMailReader {
           );
           if (message)
             results.push(
-              await toSummary(message, folder, this.config.maxPreviewChars),
+              await toSummary(
+                message,
+                folder,
+                this.config.maxPreviewChars,
+                signal,
+              ),
             );
         }
 
@@ -279,11 +296,11 @@ export class YahooMailReader {
           message,
           folder,
           this.config.maxPreviewChars,
+          signal,
         );
-        const parsed = message.source
-          ? await simpleParser(message.source)
-          : undefined;
+        const parsed = await parseMail(message, signal);
         const text = parsed?.text ?? parsed?.html?.toString() ?? "";
+        throwIfAborted(signal);
         return {
           ...summary,
           body: truncateSanitized(text, this.config.maxReadChars),
