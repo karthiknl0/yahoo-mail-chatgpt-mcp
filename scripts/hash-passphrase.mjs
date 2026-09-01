@@ -1,6 +1,10 @@
 import { randomBytes } from "node:crypto";
 import process from "node:process";
 import { encodePassphrase } from "../dist/src/oauth/passphrase.js";
+import {
+  createTerminalRestorer,
+  registerTerminationHandlers,
+} from "../dist/src/oauth/terminal.js";
 
 const minimumPassphraseLength = 16;
 
@@ -10,9 +14,12 @@ async function readHiddenPassphrase() {
   }
 
   const stdin = process.stdin;
-  const wasRaw = stdin.isRaw;
+  const restoreTerminal = createTerminalRestorer(stdin);
   let passphrase = "";
 
+  registerTerminationHandlers(process, restoreTerminal, (code) => {
+    process.exit(code);
+  });
   stdin.setEncoding("utf8");
   stdin.setRawMode(true);
   stdin.resume();
@@ -34,8 +41,7 @@ async function readHiddenPassphrase() {
       }
     }
   } finally {
-    stdin.setRawMode(wasRaw ?? false);
-    stdin.pause();
+    restoreTerminal();
   }
 
   throw new Error("Passphrase input ended unexpectedly");

@@ -1,7 +1,9 @@
 # Cloudflare Worker Deployment Design
 
+> **Superseded — historical reference only.** Do not follow this document to deploy the service on Cloudflare. The active deployment design is [Render Single-Yahoo MCP Design](2026-08-31-render-single-yahoo-mcp-design.md), which supersedes this proposal and specifies the supported Node/Render architecture.
+
 **Date:** 2026-08-30  
-**Status:** Approved architecture; implementation pending spec review  
+**Status:** Superseded by the 2026-08-31 Render design
 **Repository:** `karthiknl0/yahoo-mail-chatgpt-mcp`
 
 ## Objective
