@@ -90,6 +90,17 @@ end
 return current
 `;
 
+const IS_RATE_LIMITED_SCRIPT = `
+local limit = tonumber(ARGV[1])
+for _, key in ipairs(KEYS) do
+  local current = tonumber(redis.call('GET', key) or '0')
+  if current >= limit then
+    return 1
+  end
+end
+return 0
+`;
+
 function serialize(value: object): string {
   return JSON.stringify(value);
 }
@@ -259,6 +270,30 @@ export class RedisOAuthStore implements OAuthStore {
       throw new Error("Unexpected OAuth rate-limit result");
     }
     return result;
+  }
+
+  async isRateLimited(
+    keys: readonly string[],
+    limit: number,
+  ): Promise<boolean> {
+    if (
+      keys.length === 0 ||
+      keys.length > 10 ||
+      !Number.isSafeInteger(limit) ||
+      limit <= 0
+    ) {
+      throw new RangeError(
+        "OAuth rate-limit check is outside the allowed range",
+      );
+    }
+    const result = await this.client.eval(IS_RATE_LIMITED_SCRIPT, {
+      keys: keys.map((key) => `rate:${key}`),
+      arguments: [String(limit)],
+    });
+    if (result !== 0 && result !== 1) {
+      throw new Error("Unexpected OAuth rate-limit check result");
+    }
+    return result === 1;
   }
 
   async close(): Promise<void> {

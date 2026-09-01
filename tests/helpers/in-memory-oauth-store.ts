@@ -167,6 +167,23 @@ export class InMemoryOAuthStore implements OAuthStore {
     return next;
   }
 
+  async isRateLimited(
+    keys: readonly string[],
+    limit: number,
+  ): Promise<boolean> {
+    if (
+      keys.length === 0 ||
+      keys.length > 10 ||
+      !Number.isSafeInteger(limit) ||
+      limit <= 0
+    ) {
+      throw new RangeError(
+        "OAuth rate-limit check is outside the allowed range",
+      );
+    }
+    return keys.some((key) => (this.read(this.rateLimits, key) ?? 0) >= limit);
+  }
+
   async close(): Promise<void> {}
 
   private expiring<T>(value: T, ttlSeconds: number): ExpiringValue<T> {

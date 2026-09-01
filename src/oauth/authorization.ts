@@ -277,18 +277,30 @@ export function authorizationRouter(
           return;
         }
 
+        // The transaction is already consumed and cannot be retried. Its
+        // bucket can contain only this failed submission; the IP bucket
+        // aggregates failures across fresh one-time transactions.
+        const ip = req.ip ?? "unknown";
+        const transactionFailureKey = `authorization:transaction:${sha256Token(transactionId)}`;
+        const ipFailureKey = `authorization:ip:${sha256Token(ip)}`;
+        if (
+          await store.isRateLimited(
+            [transactionFailureKey, ipFailureKey],
+            AUTHORIZATION_ATTEMPT_LIMIT,
+          )
+        ) {
+          res.status(429).json({ error: "rate_limited" });
+          return;
+        }
+
         if (!(await verifyPassphrase(passphrase, config.passphraseDigest))) {
-          // The transaction is already consumed and cannot be retried. Its
-          // bucket records this failed submission; the IP bucket aggregates
-          // failures across fresh one-time transactions.
-          const ip = req.ip ?? "unknown";
           const [transactionFailures, ipFailures] = await Promise.all([
             store.incrementRateLimit(
-              `authorization:transaction:${sha256Token(transactionId)}`,
+              transactionFailureKey,
               AUTHORIZATION_RATE_WINDOW_SECONDS,
             ),
             store.incrementRateLimit(
-              `authorization:ip:${sha256Token(ip)}`,
+              ipFailureKey,
               AUTHORIZATION_RATE_WINDOW_SECONDS,
             ),
           ]);

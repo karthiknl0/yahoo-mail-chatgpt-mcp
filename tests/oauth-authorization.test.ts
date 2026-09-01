@@ -102,7 +102,7 @@ function createTestApp(store = new CapturingStore()) {
       throw new Error("MCP server must not be created for authorization");
     },
   });
-  return { app, store };
+  return { app, config, store };
 }
 
 function validAuthorizationQuery(
@@ -458,11 +458,11 @@ describe("OAuth authorization decision", () => {
     expect(JSON.stringify(store.rateLimitCalls)).not.toContain("198.51.100.42");
   });
 
-  it("rate limits after five passphrase attempts from one trusted client IP", async () => {
-    const { app, store } = createTestApp();
+  it("rejects a correct sixth attempt before passphrase verification after five IP failures", async () => {
+    const { app, config, store } = createTestApp();
     await store.registerClient(client);
     const responses = [];
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       const form = await beginAuthorization(app);
       responses.push(
         await request(app)
@@ -479,11 +479,35 @@ describe("OAuth authorization decision", () => {
       );
     }
 
+    expect(responses.every((response) => response.status === 403)).toBe(true);
+    expect(store.rateLimitCalls).toHaveLength(10);
+
+    Object.defineProperty(config, "passphraseDigest", {
+      configurable: true,
+      get: () => {
+        throw new Error("passphrase verification must not run after lockout");
+      },
+    });
+    const lockedTransaction = await beginAuthorization(app);
+    const lockedResponse = await request(app)
+      .post("/authorize")
+      .set("X-Forwarded-For", "198.51.100.42")
+      .set("Cookie", lockedTransaction.cookie)
+      .type("form")
+      .send({
+        transaction_id: lockedTransaction.transactionId,
+        csrf: lockedTransaction.csrf,
+        decision: "allow",
+        passphrase,
+      });
+
+    expect(lockedResponse.status).toBe(429);
+    expect(lockedResponse.body).toEqual({ error: "rate_limited" });
+    expect(store.createdCodes).toHaveLength(0);
+    expect(store.rateLimitCalls).toHaveLength(10);
     expect(
-      responses.slice(0, 5).every((response) => response.status === 403),
-    ).toBe(true);
-    expect(responses[5]!.status).toBe(429);
-    expect(responses[5]!.body).toEqual({ error: "rate_limited" });
+      await store.consumeTransaction(lockedTransaction.transactionId),
+    ).toBeNull();
   });
 
   it("redirects an explicit denial with only the OAuth error and original state", async () => {
