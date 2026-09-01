@@ -9,6 +9,8 @@ const sensitiveUrlKeywordPattern =
 const urlPattern = /https?:\/\/[^\s<>"']+/gi;
 const longDigitPattern = /\b(?:\d[ -]?){12,19}\b/g;
 const contextualCodePattern = /\b\d(?:[\s.-]?\d){3,7}\b/g;
+const strictDottedCredentialPattern =
+  /\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9._-]{8,}\b/g;
 const bearerCredentialPattern =
   /\b(?:authorization\s*:\s*)?bearer\s+[A-Za-z0-9_+~/-]{16,}(?:={1,2})?(?:\.[A-Za-z0-9_+~/-]+(?:={1,2})?)*(?![A-Za-z0-9_+~/-=])/gi;
 const contextualCredentialPattern =
@@ -67,6 +69,7 @@ function redactContextualCodes(text: string): string {
 export function sanitizeEmailText(input: string): string {
   let text = stripHtml(input).replace(controlCharacterPattern, " ");
   text = redactSensitiveUrls(text);
+  text = text.replace(strictDottedCredentialPattern, REDACTED);
   text = text.replace(bearerCredentialPattern, REDACTED);
   text = text.replace(contextualCredentialPattern, "$1: [REDACTED]");
   text = text.replace(longDigitPattern, REDACTED);
