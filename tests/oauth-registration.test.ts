@@ -78,6 +78,17 @@ describe("dynamic client registration", () => {
       { ...publicClient, redirect_uris: ["https://*.example.test/callback"] },
     ],
     [
+      "wildcard path",
+      { ...publicClient, redirect_uris: ["https://client.example/*/callback"] },
+    ],
+    [
+      "wildcard query",
+      {
+        ...publicClient,
+        redirect_uris: ["https://client.example/callback?next=*"],
+      },
+    ],
+    [
       "fragment",
       {
         ...publicClient,
@@ -140,5 +151,24 @@ describe("dynamic client registration", () => {
     expect(
       responses.filter((response) => response.status === 429),
     ).toHaveLength(1);
+  });
+
+  it("uses one trusted proxy hop to separate client rate-limit buckets", async () => {
+    const { app } = createTestApp();
+    const firstClient = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        request(app)
+          .post("/register")
+          .set("X-Forwarded-For", "198.51.100.11")
+          .send(publicClient),
+      ),
+    );
+    const secondClient = await request(app)
+      .post("/register")
+      .set("X-Forwarded-For", "198.51.100.12")
+      .send(publicClient);
+
+    expect(firstClient.every((response) => response.status === 201)).toBe(true);
+    expect(secondClient.status).toBe(201);
   });
 });

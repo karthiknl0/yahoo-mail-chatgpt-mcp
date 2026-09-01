@@ -1,7 +1,16 @@
-import { createMcpExpressApp } from "@modelcontextprotocol/express";
+import {
+  hostHeaderValidation,
+  originValidation,
+} from "@modelcontextprotocol/express";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, type McpServer } from "@modelcontextprotocol/server";
-import type { Express, NextFunction, Request, Response } from "express";
+import express, {
+  json,
+  type Express,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import type { AppConfig } from "./config.js";
@@ -47,12 +56,11 @@ export function createApp(
     responseMode: "json",
   });
   const nodeHandler = toNodeHandler(handler);
-  const app = createMcpExpressApp({
-    host: config.host,
-    allowedHosts: config.allowedHosts,
-    allowedOrigins: config.allowedOrigins,
-    jsonLimit: "32kb",
-  });
+  const app = express();
+  // Render is the single network hop in front of this private service process.
+  app.set("trust proxy", 1);
+  app.use(hostHeaderValidation(config.allowedHosts));
+  app.use(originValidation(config.allowedOrigins));
 
   app.disable("x-powered-by");
   app.use(
@@ -82,6 +90,7 @@ export function createApp(
     limiter,
     enforceBodyLimit,
     rejectUntilOAuth,
+    json({ limit: "256kb", type: "application/json" }),
     (req, res) => void nodeHandler(req, res, req.body),
   );
 

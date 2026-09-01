@@ -41,4 +41,13 @@ describe("application", () => {
     expect(response.status).toBe(401);
     expect(response.body).toEqual({ error: "unauthorized" });
   });
+
+  it("rejects oversized unauthenticated MCP JSON with the OAuth boundary", async () => {
+    const response = await request(createTestApp())
+      .post("/mcp")
+      .send({ request: "x".repeat(33_000) });
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ error: "unauthorized" });
+  });
 });
