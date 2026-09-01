@@ -230,7 +230,7 @@ async function parseMail(
     );
     signal.addEventListener("abort", onAbort, { once: true });
     source.once("error", onError);
-    parser.once("error", onError);
+    parser.on("error", onError);
     parser.once("end", onEnd);
     source.pipe(parser);
   });

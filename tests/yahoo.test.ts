@@ -61,6 +61,7 @@ class FakeMailParser extends Writable {
   static stall = false;
   static parsedText = "parsed mail";
   static parserError: Error | undefined;
+  static subsequentParserError: Error | undefined;
   static emitTextAfterError = false;
 
   constructor() {
@@ -80,6 +81,11 @@ class FakeMailParser extends Writable {
   override _final(callback: (error?: Error | null) => void): void {
     if (FakeMailParser.parserError) {
       this.emit("error", FakeMailParser.parserError);
+      if (FakeMailParser.subsequentParserError) {
+        this.emit("error", FakeMailParser.subsequentParserError);
+        callback();
+        return;
+      }
       if (FakeMailParser.emitTextAfterError) {
         this.emit("data", { type: "text", text: FakeMailParser.parsedText });
       }
@@ -132,6 +138,7 @@ beforeEach(() => {
   FakeMailParser.stall = false;
   FakeMailParser.parsedText = "parsed mail";
   FakeMailParser.parserError = undefined;
+  FakeMailParser.subsequentParserError = undefined;
   FakeMailParser.emitTextAfterError = false;
 });
 
@@ -282,6 +289,23 @@ describe("YahooMailReader output safety", () => {
     const [message] = await reader.listEmails({ limit: 1 });
 
     expect(message?.preview).toBe("Plain-text receipt summary");
+  });
+
+  it("rejects a later parser error after an oversized HTML warning", async () => {
+    FakeMailParser.parserError = new Error(
+      "HTML too long for parsing 60000 bytes",
+    );
+    FakeMailParser.subsequentParserError = new Error("Malformed MIME part");
+    FakeImapFlow.behavior = {
+      folders: [],
+      messages: [{ uid: 1, source: Buffer.from("invalid multipart mail") }],
+    };
+    const reader = new YahooMailReader(config);
+
+    await expect(reader.listEmails({ limit: 1 })).rejects.toThrow(
+      "Malformed MIME part",
+    );
+    expect(FakeMailParser.last?.destroyed).toBe(true);
   });
 
   it("destroys an active mail parser when parsing is aborted", async () => {
