@@ -548,7 +548,7 @@ git commit -m "infra: prepare secure Render deployment"
 
 - [ ] **Step 1: Write the end-to-end OAuth test**
 
-Drive registration, authorization GET, CSRF cookie extraction, authorization POST, PKCE token exchange, authenticated MCP initialization, `tools/list`, refresh rotation, and rejection of the old access/refresh credentials. Stub `createMcpServer` with the same five tool names and no mailbox data.
+Drive registration, authorization GET, CSRF cookie extraction, authorization POST, PKCE token exchange, authenticated MCP initialization, `tools/list`, refresh rotation, and rejection of the old access/refresh credentials. Exercise the real production MCP tool registration with an injected mailbox-free synthetic mail reader so CI detects any tool-surface change without contacting Yahoo.
 
 - [ ] **Step 2: Add log-capture assertions**
 
