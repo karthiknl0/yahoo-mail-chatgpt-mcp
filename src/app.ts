@@ -58,10 +58,16 @@ export function createApp(
   });
   const nodeHandler = toNodeHandler(handler);
   const app = express();
+  const allowedOriginHostnames = [
+    ...new Set([
+      ...config.allowedOrigins,
+      new URL(config.publicOrigin).hostname,
+    ]),
+  ];
   // Render is the single network hop in front of this private service process.
   app.set("trust proxy", 1);
   app.use(hostHeaderValidation(config.allowedHosts));
-  app.use(originValidation(config.allowedOrigins));
+  app.use(originValidation(allowedOriginHostnames));
 
   app.disable("x-powered-by");
   app.use(

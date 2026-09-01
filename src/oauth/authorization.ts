@@ -272,31 +272,33 @@ export function authorizationRouter(
           return;
         }
 
-        if (passphrase === null || passphrase.length === 0) {
+        if (passphrase === null) {
           res.status(403).json({ error: "access_denied" });
           return;
         }
 
-        const ip = req.ip ?? "unknown";
-        const [transactionAttempts, ipAttempts] = await Promise.all([
-          store.incrementRateLimit(
-            `authorization:transaction:${sha256Token(transactionId)}`,
-            AUTHORIZATION_RATE_WINDOW_SECONDS,
-          ),
-          store.incrementRateLimit(
-            `authorization:ip:${sha256Token(ip)}`,
-            AUTHORIZATION_RATE_WINDOW_SECONDS,
-          ),
-        ]);
-        if (
-          transactionAttempts > AUTHORIZATION_ATTEMPT_LIMIT ||
-          ipAttempts > AUTHORIZATION_ATTEMPT_LIMIT
-        ) {
-          res.status(429).json({ error: "rate_limited" });
-          return;
-        }
-
         if (!(await verifyPassphrase(passphrase, config.passphraseDigest))) {
+          // The transaction is already consumed and cannot be retried. Its
+          // bucket records this failed submission; the IP bucket aggregates
+          // failures across fresh one-time transactions.
+          const ip = req.ip ?? "unknown";
+          const [transactionFailures, ipFailures] = await Promise.all([
+            store.incrementRateLimit(
+              `authorization:transaction:${sha256Token(transactionId)}`,
+              AUTHORIZATION_RATE_WINDOW_SECONDS,
+            ),
+            store.incrementRateLimit(
+              `authorization:ip:${sha256Token(ip)}`,
+              AUTHORIZATION_RATE_WINDOW_SECONDS,
+            ),
+          ]);
+          if (
+            transactionFailures > AUTHORIZATION_ATTEMPT_LIMIT ||
+            ipFailures > AUTHORIZATION_ATTEMPT_LIMIT
+          ) {
+            res.status(429).json({ error: "rate_limited" });
+            return;
+          }
           res.status(403).json({ error: "access_denied" });
           return;
         }

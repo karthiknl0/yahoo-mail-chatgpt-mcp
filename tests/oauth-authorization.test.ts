@@ -270,6 +270,50 @@ describe("OAuth authorization request", () => {
     expect(response.text).not.toContain("private-redis.internal");
     expect(response.text).not.toContain("yahoo-mail-mcp.onrender.com");
   });
+
+  it("accepts a same-origin browser form POST", async () => {
+    const { app, store } = createTestApp();
+    await store.registerClient(client);
+    const allowed = await beginAuthorization(app);
+
+    const allowedResponse = await request(app)
+      .post("/authorize")
+      .set("Origin", origin)
+      .set("Cookie", allowed.cookie)
+      .type("form")
+      .send({
+        transaction_id: allowed.transactionId,
+        csrf: allowed.csrf,
+        decision: "deny",
+      });
+
+    expect(allowedResponse.status).toBe(302);
+    expect(allowedResponse.headers.location).toBe(
+      `${redirectUri}?error=access_denied&state=original-state`,
+    );
+  });
+
+  it("rejects a hostile browser origin before consuming the transaction", async () => {
+    const { app, store } = createTestApp();
+    await store.registerClient(client);
+    const rejected = await beginAuthorization(app);
+    const rejectedResponse = await request(app)
+      .post("/authorize")
+      .set("Origin", "https://attacker.example.test")
+      .set("Cookie", rejected.cookie)
+      .type("form")
+      .send({
+        transaction_id: rejected.transactionId,
+        csrf: rejected.csrf,
+        decision: "deny",
+      });
+
+    expect(rejectedResponse.status).toBe(403);
+    expect(rejectedResponse.headers.location).toBeUndefined();
+    expect(
+      await store.consumeTransaction(rejected.transactionId),
+    ).not.toBeNull();
+  });
 });
 
 describe("OAuth authorization decision", () => {
@@ -349,7 +393,35 @@ describe("OAuth authorization decision", () => {
     expect(store.createdCodes).toHaveLength(0);
   });
 
-  it("uses separate transaction and trusted-IP failure buckets for fifteen minutes", async () => {
+  it("does not charge successful authorizations against failure buckets", async () => {
+    const { app, store } = createTestApp();
+    await store.registerClient(client);
+    const responses = [];
+
+    for (let index = 0; index < 6; index += 1) {
+      const form = await beginAuthorization(app);
+      responses.push(
+        await request(app)
+          .post("/authorize")
+          .set("X-Forwarded-For", "198.51.100.42")
+          .set("Cookie", form.cookie)
+          .type("form")
+          .send({
+            transaction_id: form.transactionId,
+            csrf: form.csrf,
+            decision: "allow",
+            passphrase,
+          }),
+      );
+      expect(await store.consumeTransaction(form.transactionId)).toBeNull();
+    }
+
+    expect(responses.every((response) => response.status === 302)).toBe(true);
+    expect(store.createdCodes).toHaveLength(6);
+    expect(store.rateLimitCalls).toHaveLength(0);
+  });
+
+  it("records a failed one-time transaction and trusted IP for fifteen minutes", async () => {
     const { app, store } = createTestApp();
     await store.registerClient(client);
     const form = await beginAuthorization(app);
