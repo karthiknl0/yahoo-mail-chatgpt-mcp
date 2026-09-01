@@ -39,7 +39,16 @@ export interface OAuthStore {
   rotateRefreshToken(
     input: RotateRefreshTokenInput,
   ): Promise<RotateRefreshTokenResult>;
-  isRateLimited(keys: readonly string[], limit: number): Promise<boolean>;
+  reserveRateLimit(
+    keys: readonly string[],
+    reservationId: string,
+    limit: number,
+    ttlSeconds: number,
+  ): Promise<boolean>;
+  releaseRateLimit(
+    keys: readonly string[],
+    reservationId: string,
+  ): Promise<void>;
   incrementRateLimit(key: string, ttlSeconds: number): Promise<number>;
   close(): Promise<void>;
 }

@@ -91,17 +91,68 @@ describe("OAuth store contract", () => {
     );
   });
 
-  it("checks multiple rate-limit counters without incrementing them", async () => {
+  it("atomically caps concurrent multi-key rate-limit reservations", async () => {
     const store = new InMemoryOAuthStore(1_700_000_000_000);
-    await Promise.all(
-      Array.from({ length: 5 }, () => store.incrementRateLimit("ip-1", 60)),
+    const attempts = await Promise.all(
+      Array.from({ length: 10 }, (_, index) =>
+        store.reserveRateLimit(
+          [`transaction-${index}`, "ip-1"],
+          `reservation-${index}`,
+          5,
+          60,
+        ),
+      ),
     );
 
-    expect(await store.isRateLimited(["transaction-1", "ip-1"], 5)).toBe(true);
-    expect(await store.isRateLimited(["transaction-1"], 5)).toBe(false);
-    expect(await store.incrementRateLimit("transaction-1", 60)).toBe(1);
+    expect(attempts.filter(Boolean)).toHaveLength(5);
+    expect(attempts.filter((admitted) => !admitted)).toHaveLength(5);
+  });
+
+  it("releases successful reservations while retained failures expire at the original TTL", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    expect(
+      await store.reserveRateLimit(
+        ["transaction-1", "ip-1"],
+        "reservation-1",
+        1,
+        60,
+      ),
+    ).toBe(true);
+    expect(
+      await store.reserveRateLimit(
+        ["transaction-2", "ip-1"],
+        "reservation-2",
+        1,
+        60,
+      ),
+    ).toBe(false);
+
+    await store.releaseRateLimit(["transaction-1", "ip-1"], "reservation-1");
+    expect(
+      await store.reserveRateLimit(
+        ["transaction-2", "ip-1"],
+        "reservation-2",
+        1,
+        60,
+      ),
+    ).toBe(true);
+    expect(
+      await store.reserveRateLimit(
+        ["transaction-3", "ip-1"],
+        "reservation-3",
+        1,
+        60,
+      ),
+    ).toBe(false);
     store.advanceBy(60_000);
-    expect(await store.isRateLimited(["transaction-1", "ip-1"], 5)).toBe(false);
+    expect(
+      await store.reserveRateLimit(
+        ["transaction-3", "ip-1"],
+        "reservation-3",
+        1,
+        60,
+      ),
+    ).toBe(true);
   });
 
   it("marks refresh-token replay and revokes the whole family", async () => {
@@ -259,7 +310,7 @@ class StrictFakeRedisClient {
     _script: string,
     options: { keys: string[]; arguments: string[] },
   ): Promise<unknown> {
-    if (options.keys.length === 0 || options.arguments.length === 0) {
+    if (options.keys.length === 0) {
       throw new Error("invalid EVAL command shape");
     }
     this.calls.push({ method: "eval", ...structuredClone(options) });
@@ -386,19 +437,30 @@ describe("RedisOAuthStore command boundaries", () => {
     ]);
   });
 
-  it("checks multiple rate limits atomically in one Lua command", async () => {
+  it("reserves and releases multiple rate limits atomically in Lua", async () => {
     const fake = new StrictFakeRedisClient();
     fake.evalReply = 1;
     const store = redisStore(fake);
 
-    expect(await store.isRateLimited(["login:tx-1", "login:ip-1"], 5)).toBe(
-      true,
-    );
+    expect(
+      await store.reserveRateLimit(
+        ["login:tx-1", "login:ip-1"],
+        "reservation-1",
+        5,
+        900,
+      ),
+    ).toBe(true);
+    await store.releaseRateLimit(["login:tx-1", "login:ip-1"], "reservation-1");
     expect(fake.calls).toEqual([
       {
         method: "eval",
-        keys: ["rate:login:tx-1", "rate:login:ip-1"],
-        arguments: ["5"],
+        keys: ["rate-reservations:login:tx-1", "rate-reservations:login:ip-1"],
+        arguments: ["reservation-1", "5", "900"],
+      },
+      {
+        method: "eval",
+        keys: ["rate-reservations:login:tx-1", "rate-reservations:login:ip-1"],
+        arguments: ["reservation-1"],
       },
     ]);
   });

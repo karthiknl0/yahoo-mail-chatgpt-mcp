@@ -49,6 +49,16 @@ class CapturingStore extends InMemoryOAuthStore {
     ttlSeconds: number;
   }> = [];
   readonly rateLimitCalls: Array<{ key: string; ttlSeconds: number }> = [];
+  readonly reservationCalls: Array<{
+    keys: readonly string[];
+    reservationId: string;
+    limit: number;
+    ttlSeconds: number;
+  }> = [];
+  readonly releaseCalls: Array<{
+    keys: readonly string[];
+    reservationId: string;
+  }> = [];
 
   override async createTransaction(
     id: string,
@@ -82,6 +92,29 @@ class CapturingStore extends InMemoryOAuthStore {
   ): Promise<number> {
     this.rateLimitCalls.push({ key, ttlSeconds });
     return super.incrementRateLimit(key, ttlSeconds);
+  }
+
+  override async reserveRateLimit(
+    keys: readonly string[],
+    reservationId: string,
+    limit: number,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    this.reservationCalls.push({
+      keys: [...keys],
+      reservationId,
+      limit,
+      ttlSeconds,
+    });
+    return super.reserveRateLimit(keys, reservationId, limit, ttlSeconds);
+  }
+
+  override async releaseRateLimit(
+    keys: readonly string[],
+    reservationId: string,
+  ): Promise<void> {
+    this.releaseCalls.push({ keys: [...keys], reservationId });
+    await super.releaseRateLimit(keys, reservationId);
   }
 }
 
@@ -419,6 +452,57 @@ describe("OAuth authorization decision", () => {
     expect(responses.every((response) => response.status === 302)).toBe(true);
     expect(store.createdCodes).toHaveLength(6);
     expect(store.rateLimitCalls).toHaveLength(0);
+    expect(store.reservationCalls).toHaveLength(6);
+    expect(store.releaseCalls).toHaveLength(6);
+  });
+
+  it("atomically admits only five concurrent attempts and releases successful reservations", async () => {
+    const { app, config, store } = createTestApp();
+    await store.registerClient(client);
+    let digestReads = 0;
+    Object.defineProperty(config, "passphraseDigest", {
+      configurable: true,
+      get: () => {
+        digestReads += 1;
+        return passphraseDigest;
+      },
+    });
+    const forms = await Promise.all(
+      Array.from({ length: 6 }, () => beginAuthorization(app)),
+    );
+
+    const responses = await Promise.all(
+      forms.map((form) =>
+        request(app)
+          .post("/authorize")
+          .set("X-Forwarded-For", "198.51.100.42")
+          .set("Cookie", form.cookie)
+          .type("form")
+          .send({
+            transaction_id: form.transactionId,
+            csrf: form.csrf,
+            decision: "allow",
+            passphrase,
+          }),
+      ),
+    );
+
+    expect(
+      responses.filter((response) => response.status === 302),
+    ).toHaveLength(5);
+    expect(
+      responses.filter((response) => response.status === 429),
+    ).toHaveLength(1);
+    expect(digestReads).toBe(5);
+    expect(store.createdCodes).toHaveLength(5);
+    expect(store.rateLimitCalls).toHaveLength(0);
+    expect(store.reservationCalls).toHaveLength(6);
+    expect(store.releaseCalls).toHaveLength(5);
+
+    const later = await beginAuthorization(app);
+    const laterResponse = await postAuthorization(app, later);
+    expect(laterResponse.status).toBe(302);
+    expect(digestReads).toBe(6);
   });
 
   it("records a failed one-time transaction and trusted IP for fifteen minutes", async () => {
@@ -439,23 +523,25 @@ describe("OAuth authorization decision", () => {
       });
 
     expect(response.status).toBe(403);
-    expect(store.rateLimitCalls).toHaveLength(2);
-    expect(store.rateLimitCalls).toEqual(
-      expect.arrayContaining([
-        {
-          key: `authorization:transaction:${sha256Token(form.transactionId)}`,
-          ttlSeconds: 900,
-        },
-        {
-          key: `authorization:ip:${sha256Token("198.51.100.42")}`,
-          ttlSeconds: 900,
-        },
-      ]),
-    );
-    expect(JSON.stringify(store.rateLimitCalls)).not.toContain(
+    expect(store.rateLimitCalls).toHaveLength(0);
+    expect(store.reservationCalls).toEqual([
+      {
+        keys: [
+          `authorization:transaction:${sha256Token(form.transactionId)}`,
+          `authorization:ip:${sha256Token("198.51.100.42")}`,
+        ],
+        reservationId: sha256Token(form.transactionId),
+        limit: 5,
+        ttlSeconds: 900,
+      },
+    ]);
+    expect(store.releaseCalls).toHaveLength(0);
+    expect(JSON.stringify(store.reservationCalls)).not.toContain(
       form.transactionId,
     );
-    expect(JSON.stringify(store.rateLimitCalls)).not.toContain("198.51.100.42");
+    expect(JSON.stringify(store.reservationCalls)).not.toContain(
+      "198.51.100.42",
+    );
   });
 
   it("rejects a correct sixth attempt before passphrase verification after five IP failures", async () => {
@@ -480,7 +566,9 @@ describe("OAuth authorization decision", () => {
     }
 
     expect(responses.every((response) => response.status === 403)).toBe(true);
-    expect(store.rateLimitCalls).toHaveLength(10);
+    expect(store.rateLimitCalls).toHaveLength(0);
+    expect(store.reservationCalls).toHaveLength(5);
+    expect(store.releaseCalls).toHaveLength(0);
 
     Object.defineProperty(config, "passphraseDigest", {
       configurable: true,
@@ -504,7 +592,9 @@ describe("OAuth authorization decision", () => {
     expect(lockedResponse.status).toBe(429);
     expect(lockedResponse.body).toEqual({ error: "rate_limited" });
     expect(store.createdCodes).toHaveLength(0);
-    expect(store.rateLimitCalls).toHaveLength(10);
+    expect(store.rateLimitCalls).toHaveLength(0);
+    expect(store.reservationCalls).toHaveLength(6);
+    expect(store.releaseCalls).toHaveLength(0);
     expect(
       await store.consumeTransaction(lockedTransaction.transactionId),
     ).toBeNull();

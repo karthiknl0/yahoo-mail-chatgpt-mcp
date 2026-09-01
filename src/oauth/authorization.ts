@@ -277,44 +277,32 @@ export function authorizationRouter(
           return;
         }
 
-        // The transaction is already consumed and cannot be retried. Its
-        // bucket can contain only this failed submission; the IP bucket
-        // aggregates failures across fresh one-time transactions.
+        // The transaction is already consumed and cannot be retried. An
+        // admitted reservation is retained as its one failure, or released
+        // after success; the IP bucket spans fresh one-time transactions.
         const ip = req.ip ?? "unknown";
         const transactionFailureKey = `authorization:transaction:${sha256Token(transactionId)}`;
         const ipFailureKey = `authorization:ip:${sha256Token(ip)}`;
+        const failureKeys = [transactionFailureKey, ipFailureKey];
+        const reservationId = sha256Token(transactionId);
         if (
-          await store.isRateLimited(
-            [transactionFailureKey, ipFailureKey],
+          !(await store.reserveRateLimit(
+            failureKeys,
+            reservationId,
             AUTHORIZATION_ATTEMPT_LIMIT,
-          )
+            AUTHORIZATION_RATE_WINDOW_SECONDS,
+          ))
         ) {
           res.status(429).json({ error: "rate_limited" });
           return;
         }
 
         if (!(await verifyPassphrase(passphrase, config.passphraseDigest))) {
-          const [transactionFailures, ipFailures] = await Promise.all([
-            store.incrementRateLimit(
-              transactionFailureKey,
-              AUTHORIZATION_RATE_WINDOW_SECONDS,
-            ),
-            store.incrementRateLimit(
-              ipFailureKey,
-              AUTHORIZATION_RATE_WINDOW_SECONDS,
-            ),
-          ]);
-          if (
-            transactionFailures > AUTHORIZATION_ATTEMPT_LIMIT ||
-            ipFailures > AUTHORIZATION_ATTEMPT_LIMIT
-          ) {
-            res.status(429).json({ error: "rate_limited" });
-            return;
-          }
           res.status(403).json({ error: "access_denied" });
           return;
         }
 
+        await store.releaseRateLimit(failureKeys, reservationId);
         const code = randomToken();
         await store.createAuthorizationCode(
           sha256Token(code),

@@ -38,6 +38,10 @@ export class InMemoryOAuthStore implements OAuthStore {
   >();
   private readonly revokedFamilies = new Map<string, number>();
   private readonly rateLimits = new Map<string, ExpiringValue<number>>();
+  private readonly rateLimitReservations = new Map<
+    string,
+    Map<string, number>
+  >();
   private currentTime: number;
 
   constructor(now = Date.now()) {
@@ -167,21 +171,56 @@ export class InMemoryOAuthStore implements OAuthStore {
     return next;
   }
 
-  async isRateLimited(
+  async reserveRateLimit(
     keys: readonly string[],
+    reservationId: string,
     limit: number,
+    ttlSeconds: number,
   ): Promise<boolean> {
     if (
       keys.length === 0 ||
       keys.length > 10 ||
+      new Set(keys).size !== keys.length ||
+      keys.some((key) => key.length === 0 || key.length > 512) ||
+      reservationId.length === 0 ||
+      reservationId.length > 128 ||
       !Number.isSafeInteger(limit) ||
-      limit <= 0
+      limit <= 0 ||
+      !Number.isSafeInteger(ttlSeconds) ||
+      ttlSeconds <= 0 ||
+      ttlSeconds > 30 * 24 * 60 * 60
     ) {
-      throw new RangeError(
-        "OAuth rate-limit check is outside the allowed range",
-      );
+      throw new RangeError("OAuth rate-limit reservation is invalid");
     }
-    return keys.some((key) => (this.read(this.rateLimits, key) ?? 0) >= limit);
+    const buckets = keys.map((key) => this.activeReservations(key));
+    if (buckets.some((bucket) => bucket.size >= limit)) return false;
+    const expiresAt = this.currentTime + ttlSeconds * 1_000;
+    for (const [index, bucket] of buckets.entries()) {
+      bucket.set(reservationId, expiresAt);
+      this.rateLimitReservations.set(keys[index]!, bucket);
+    }
+    return true;
+  }
+
+  async releaseRateLimit(
+    keys: readonly string[],
+    reservationId: string,
+  ): Promise<void> {
+    if (
+      keys.length === 0 ||
+      keys.length > 10 ||
+      new Set(keys).size !== keys.length ||
+      keys.some((key) => key.length === 0 || key.length > 512) ||
+      reservationId.length === 0 ||
+      reservationId.length > 128
+    ) {
+      throw new RangeError("OAuth rate-limit reservation is invalid");
+    }
+    for (const key of keys) {
+      const bucket = this.activeReservations(key);
+      bucket.delete(reservationId);
+      if (bucket.size === 0) this.rateLimitReservations.delete(key);
+    }
   }
 
   async close(): Promise<void> {}
@@ -227,5 +266,16 @@ export class InMemoryOAuthStore implements OAuthStore {
       return false;
     }
     return true;
+  }
+
+  private activeReservations(key: string): Map<string, number> {
+    const bucket = this.rateLimitReservations.get(key) ?? new Map();
+    for (const [reservationId, expiresAt] of bucket) {
+      if (expiresAt <= this.currentTime) bucket.delete(reservationId);
+    }
+    if (bucket.size === 0) {
+      this.rateLimitReservations.delete(key);
+    }
+    return bucket;
   }
 }

@@ -90,15 +90,36 @@ end
 return current
 `;
 
-const IS_RATE_LIMITED_SCRIPT = `
-local limit = tonumber(ARGV[1])
+const RESERVE_RATE_LIMIT_SCRIPT = `
+local redisTime = redis.call('TIME')
+local nowMillis = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local reservationId = ARGV[1]
+local limit = tonumber(ARGV[2])
+local ttlMillis = tonumber(ARGV[3]) * 1000
+
 for _, key in ipairs(KEYS) do
-  local current = tonumber(redis.call('GET', key) or '0')
-  if current >= limit then
-    return 1
+  redis.call('ZREMRANGEBYSCORE', key, '-inf', nowMillis)
+  if redis.call('ZCARD', key) >= limit then
+    return 0
   end
 end
-return 0
+
+for _, key in ipairs(KEYS) do
+  redis.call('ZADD', key, nowMillis + ttlMillis, reservationId)
+  redis.call('PEXPIRE', key, ttlMillis)
+end
+return 1
+`;
+
+const RELEASE_RATE_LIMIT_SCRIPT = `
+local reservationId = ARGV[1]
+for _, key in ipairs(KEYS) do
+  redis.call('ZREM', key, reservationId)
+  if redis.call('ZCARD', key) == 0 then
+    redis.call('DEL', key)
+  end
+end
+return 1
 `;
 
 function serialize(value: object): string {
@@ -116,6 +137,24 @@ function assertTtl(ttlSeconds: number, maximum = THIRTY_DAYS_SECONDS): void {
     ttlSeconds > maximum
   ) {
     throw new RangeError("OAuth store TTL is outside the allowed range");
+  }
+}
+
+function assertRateLimitReservation(
+  keys: readonly string[],
+  reservationId: string,
+  limit?: number,
+): void {
+  if (
+    keys.length === 0 ||
+    keys.length > 10 ||
+    new Set(keys).size !== keys.length ||
+    keys.some((key) => key.length === 0 || key.length > 512) ||
+    reservationId.length === 0 ||
+    reservationId.length > 128 ||
+    (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0))
+  ) {
+    throw new RangeError("OAuth rate-limit reservation is invalid");
   }
 }
 
@@ -272,28 +311,36 @@ export class RedisOAuthStore implements OAuthStore {
     return result;
   }
 
-  async isRateLimited(
+  async reserveRateLimit(
     keys: readonly string[],
+    reservationId: string,
     limit: number,
+    ttlSeconds: number,
   ): Promise<boolean> {
-    if (
-      keys.length === 0 ||
-      keys.length > 10 ||
-      !Number.isSafeInteger(limit) ||
-      limit <= 0
-    ) {
-      throw new RangeError(
-        "OAuth rate-limit check is outside the allowed range",
-      );
-    }
-    const result = await this.client.eval(IS_RATE_LIMITED_SCRIPT, {
-      keys: keys.map((key) => `rate:${key}`),
-      arguments: [String(limit)],
+    assertRateLimitReservation(keys, reservationId, limit);
+    assertTtl(ttlSeconds);
+    const result = await this.client.eval(RESERVE_RATE_LIMIT_SCRIPT, {
+      keys: keys.map((key) => `rate-reservations:${key}`),
+      arguments: [reservationId, String(limit), String(ttlSeconds)],
     });
     if (result !== 0 && result !== 1) {
-      throw new Error("Unexpected OAuth rate-limit check result");
+      throw new Error("Unexpected OAuth rate-limit reservation result");
     }
     return result === 1;
+  }
+
+  async releaseRateLimit(
+    keys: readonly string[],
+    reservationId: string,
+  ): Promise<void> {
+    assertRateLimitReservation(keys, reservationId);
+    const result = await this.client.eval(RELEASE_RATE_LIMIT_SCRIPT, {
+      keys: keys.map((key) => `rate-reservations:${key}`),
+      arguments: [reservationId],
+    });
+    if (result !== 1) {
+      throw new Error("Unexpected OAuth rate-limit release result");
+    }
   }
 
   async close(): Promise<void> {
