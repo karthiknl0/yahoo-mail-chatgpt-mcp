@@ -11,13 +11,15 @@ const longDigitPattern = /\b(?:\d[ -]?){12,19}\b/g;
 const contextualCodePattern = /\b\d(?:[\s.-]?\d){3,7}\b/g;
 const strictDottedCredentialPattern =
   /\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9._-]{8,}\b/g;
+const strictOpaqueBase64UrlCredentialPattern =
+  /(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]{0,42}[A-Z])(?=[A-Za-z0-9_-]{0,42}[a-z])(?=[A-Za-z0-9_-]{0,42}\d)[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
 const bearerCredentialPattern =
   /\b(?:authorization\s*:\s*)?bearer\s+[A-Za-z0-9_+~/-]{16,}(?:={1,2})?(?:\.[A-Za-z0-9_+~/-]+(?:={1,2})?)*(?![A-Za-z0-9_+~/-=])/gi;
 const contextualCredentialPattern =
   /\b((?:(?:api|access|refresh|auth(?:entication)?|bearer|session)\s*)?(?:token|key)|client\s*secret|secret)\s*(?::|=|is\b)?\s*([A-Za-z0-9_-]{16,})\b/gi;
 const controlCharacterPattern = /[\p{Cc}\p{Cf}]/gu;
 const promptInjectionPattern =
-  /\b(?:ignore|disregard|override|forget|bypass)\b[\s\S]{0,80}\b(?:previous|prior|system|developer|instructions?|rules?|prompt|guardrails?|safety|polic(?:y|ies))\b|\b(?:system|developer)\s*(?:message|prompt|instructions?)?\s*:/gi;
+  /\b(?:ignore|disregard|override|forget|bypass)\b[\s\S]{0,80}\b(?:previous|prior|system|developer|instructions?|rules?|prompt|guardrails?|safety|polic(?:y|ies))\b|\bdo\s+not\s+(?:follow|obey)\b[\s\S]{0,80}\b(?:previous|prior|system|developer|instructions?|rules?|prompt|guardrails?|safety|polic(?:y|ies))\b|\b(?:system|developer)\s*(?:message|prompt|instructions?)?\s*:/gi;
 
 function normalizeCode(candidate: string): string {
   return candidate.replace(/[^0-9]/g, "");
@@ -70,6 +72,7 @@ export function sanitizeEmailText(input: string): string {
   let text = stripHtml(input).replace(controlCharacterPattern, " ");
   text = redactSensitiveUrls(text);
   text = text.replace(strictDottedCredentialPattern, REDACTED);
+  text = text.replace(strictOpaqueBase64UrlCredentialPattern, REDACTED);
   text = text.replace(bearerCredentialPattern, REDACTED);
   text = text.replace(contextualCredentialPattern, "$1: [REDACTED]");
   text = text.replace(longDigitPattern, REDACTED);

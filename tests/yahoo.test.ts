@@ -1,11 +1,6 @@
+import { Writable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config.js";
-
-let parseMessage: () => Promise<{
-  text?: string;
-  html?: string;
-  attachments: unknown[];
-}> = async () => ({ attachments: [] });
 
 type FakeMessage = {
   uid: number;
@@ -25,6 +20,7 @@ class FakeImapFlow {
     messages: FakeMessage[];
     connect?: () => Promise<void>;
   } = { folders: [], messages: [] };
+  static fetchQueries: unknown[] = [];
 
   closed = false;
 
@@ -48,15 +44,53 @@ class FakeImapFlow {
     return FakeImapFlow.behavior.messages.map((message) => message.uid);
   }
 
-  async fetchOne(uid: number): Promise<FakeMessage | undefined> {
+  async fetchOne(
+    uid: number,
+    query?: unknown,
+  ): Promise<FakeMessage | undefined> {
+    FakeImapFlow.fetchQueries.push(query);
     return FakeImapFlow.behavior.messages.find(
       (message) => message.uid === uid,
     );
   }
 }
 
+class FakeMailParser extends Writable {
+  static last: FakeMailParser | undefined;
+  static onWrite: (() => void) | undefined;
+  static stall = false;
+  static parsedText = "parsed mail";
+
+  constructor() {
+    super();
+    FakeMailParser.last = this;
+  }
+
+  override _write(
+    _chunk: Buffer,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ): void {
+    FakeMailParser.onWrite?.();
+    if (!FakeMailParser.stall) callback();
+  }
+
+  override _final(callback: (error?: Error | null) => void): void {
+    this.emit("data", { type: "text", text: FakeMailParser.parsedText });
+    this.emit("end");
+    callback();
+  }
+}
+
 vi.mock("imapflow", () => ({ ImapFlow: FakeImapFlow }));
-vi.mock("mailparser", () => ({ simpleParser: () => parseMessage() }));
+vi.mock("mailparser", () => ({
+  MailParser: FakeMailParser,
+  simpleParser: () => {
+    FakeMailParser.onWrite?.();
+    if (FakeMailParser.stall) return new Promise(() => undefined);
+    return Promise.resolve({ attachments: [] });
+  },
+}));
 
 const { YahooMailReader } = await import("../src/yahoo.js");
 
@@ -81,7 +115,11 @@ const config = {
 
 beforeEach(() => {
   FakeImapFlow.behavior = { folders: [], messages: [] };
-  parseMessage = async () => ({ attachments: [] });
+  FakeImapFlow.fetchQueries = [];
+  FakeMailParser.last = undefined;
+  FakeMailParser.onWrite = undefined;
+  FakeMailParser.stall = false;
+  FakeMailParser.parsedText = "parsed mail";
 });
 
 describe("YahooMailReader output safety", () => {
@@ -154,17 +192,12 @@ describe("YahooMailReader output safety", () => {
 
   it("does not return parsed mail data after cancellation", async () => {
     let parsingStarted: (() => void) | undefined;
-    let resolveParse:
-      ((value: { text: string; attachments: unknown[] }) => void) | undefined;
     const started = new Promise<void>((resolve) => {
       parsingStarted = resolve;
     });
-    parseMessage = () => {
-      parsingStarted?.();
-      return new Promise((resolve) => {
-        resolveParse = resolve;
-      });
-    };
+    FakeMailParser.parsedText = "private mailbox content";
+    FakeMailParser.stall = true;
+    FakeMailParser.onWrite = () => parsingStarted?.();
     FakeImapFlow.behavior = {
       folders: [],
       messages: [{ uid: 1, source: Buffer.from("mail body") }],
@@ -179,9 +212,51 @@ describe("YahooMailReader output safety", () => {
 
     await started;
     controller.abort();
-    resolveParse?.({ text: "private mailbox content", attachments: [] });
 
     await expect(operation).rejects.toMatchObject({ name: "AbortError" });
     expect(close).toHaveBeenCalled();
+  });
+
+  it("fetches a bounded mail source before parsing", async () => {
+    FakeImapFlow.behavior = {
+      folders: [],
+      messages: [{ uid: 1, source: Buffer.from("mail body") }],
+    };
+    const reader = new YahooMailReader(config);
+
+    await reader.listEmails({ limit: 1 });
+
+    expect(FakeImapFlow.fetchQueries).toContainEqual({
+      uid: true,
+      envelope: true,
+      flags: true,
+      internalDate: true,
+      source: { maxLength: 512 * 1024 },
+    });
+  });
+
+  it("destroys an active mail parser when parsing is aborted", async () => {
+    let parsingStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      parsingStarted = resolve;
+    });
+    FakeMailParser.stall = true;
+    FakeMailParser.onWrite = () => parsingStarted?.();
+    FakeImapFlow.behavior = {
+      folders: [],
+      messages: [{ uid: 1, source: Buffer.from("mail body") }],
+    };
+    const controller = new AbortController();
+    const reader = new YahooMailReader(config);
+    const operation = reader.listEmails({
+      limit: 1,
+      signal: controller.signal,
+    });
+
+    await started;
+    controller.abort();
+
+    await expect(operation).rejects.toMatchObject({ name: "AbortError" });
+    expect(FakeMailParser.last?.destroyed).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import { ImapFlow, type FetchMessageObject } from "imapflow";
-import { simpleParser } from "mailparser";
+import { MailParser } from "mailparser";
+import { Readable } from "node:stream";
 import type { AppConfig } from "./config.js";
 import {
   truncateMailDisplayText,
@@ -7,6 +8,8 @@ import {
 } from "./security/redact.js";
 
 const MAX_MAIL_DISPLAY_CHARS = 200;
+const MAX_MAIL_SOURCE_BYTES = 512 * 1024;
+const MAX_PARSED_MAIL_BODY_CHARS = 50_000;
 
 export interface SafeMailSummary {
   uid: number;
@@ -86,7 +89,7 @@ async function toSummary(
     ),
     receivedAt: toIsoDate(message.internalDate ?? message.envelope?.date),
     unread: !message.flags?.has("\\Seen"),
-    hasAttachments: (parsed?.attachments.length ?? 0) > 0,
+    hasAttachments: parsed?.hasAttachments ?? false,
     preview: truncateSanitized(text, maxPreviewChars),
   };
 }
@@ -122,11 +125,99 @@ async function awaitAbortable<T>(
   });
 }
 
-async function parseMail(message: FetchMessageObject, signal: AbortSignal) {
+type ParsedMailText = {
+  text?: string;
+  html?: string;
+  hasAttachments: boolean;
+};
+
+function boundedMailSource(source: Buffer): Readable {
+  const bounded = source.subarray(0, MAX_MAIL_SOURCE_BYTES);
+
+  async function* chunks(): AsyncGenerator<Buffer> {
+    for (let offset = 0; offset < bounded.length; offset += 16 * 1024) {
+      yield bounded.subarray(offset, offset + 16 * 1024);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  return Readable.from(chunks());
+}
+
+async function parseMail(
+  message: FetchMessageObject,
+  signal: AbortSignal,
+): Promise<ParsedMailText | undefined> {
   if (!message.source) return undefined;
-  const parsed = await awaitAbortable(simpleParser(message.source), signal);
   throwIfAborted(signal);
-  return parsed;
+
+  const source = boundedMailSource(message.source);
+  const parser = new MailParser({
+    keepCidLinks: true,
+    skipImageLinks: true,
+    skipTextToHtml: true,
+    maxHtmlLengthToParse: MAX_PARSED_MAIL_BODY_CHARS,
+  });
+
+  return new Promise<ParsedMailText>((resolve, reject) => {
+    let settled = false;
+    let text: string | undefined;
+    let html: string | undefined;
+    let hasAttachments = false;
+
+    const cleanup = () => {
+      signal.removeEventListener("abort", onAbort);
+      source.removeListener("error", onError);
+      parser.removeListener("error", onError);
+      parser.removeListener("end", onEnd);
+      source.unpipe(parser);
+      source.destroy();
+      if (!parser.destroyed) parser.destroy();
+    };
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else {
+        const parsed: ParsedMailText = { hasAttachments };
+        if (text !== undefined) parsed.text = text;
+        if (html !== undefined) parsed.html = html;
+        resolve(parsed);
+      }
+    };
+    const onAbort = () => finish(abortError(signal));
+    const onError = (error: Error) => finish(error);
+    const onEnd = () => finish();
+
+    parser.on(
+      "data",
+      (data: {
+        type?: string;
+        text?: string;
+        html?: string | false;
+        content?: Readable;
+        release?: () => void;
+      }) => {
+        if (data.type === "text") {
+          text = data.text?.slice(0, MAX_PARSED_MAIL_BODY_CHARS);
+          html =
+            typeof data.html === "string"
+              ? data.html.slice(0, MAX_PARSED_MAIL_BODY_CHARS)
+              : undefined;
+        } else if (data.type === "attachment") {
+          hasAttachments = true;
+          data.content?.once("end", () => data.release?.());
+          data.content?.resume();
+        }
+      },
+    );
+    signal.addEventListener("abort", onAbort, { once: true });
+    source.once("error", onError);
+    parser.once("error", onError);
+    parser.once("end", onEnd);
+    source.pipe(parser);
+  });
 }
 
 export class YahooMailReader {
@@ -245,7 +336,7 @@ export class YahooMailReader {
                 envelope: true,
                 flags: true,
                 internalDate: true,
-                source: true,
+                source: { maxLength: MAX_MAIL_SOURCE_BYTES },
               },
               { uid: true },
             ),
@@ -284,7 +375,7 @@ export class YahooMailReader {
               envelope: true,
               flags: true,
               internalDate: true,
-              source: true,
+              source: { maxLength: MAX_MAIL_SOURCE_BYTES },
             },
             { uid: true },
           ),
