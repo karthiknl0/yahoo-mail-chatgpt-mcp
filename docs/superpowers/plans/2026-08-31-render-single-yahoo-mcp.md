@@ -26,6 +26,7 @@
 ### Task 1: Production configuration and testable app boundary
 
 **Files:**
+
 - Modify: `package.json`
 - Modify: `src/config.ts`
 - Create: `src/app.ts`
@@ -34,6 +35,7 @@
 - Create: `tests/app.test.ts`
 
 **Interfaces:**
+
 - Produces: `loadConfig(env): AppConfig` with `redisUrl`, `publicOrigin`, `resourceUrl`, `passphraseDigest`, and `oauthCookieKey`.
 - Produces: `createApp(config, dependencies): Express` without opening a listening socket.
 - Consumes: the existing `createYahooMcpServer(config)` factory.
@@ -56,15 +58,15 @@ Add cases to `tests/config-auth.test.ts` using this complete production baseline
 ```ts
 function validEnv(): NodeJS.ProcessEnv {
   return {
-    YAHOO_EMAIL: 'user@example.com',
-    YAHOO_APP_PASSWORD: 'app-password-value',
-    REDIS_URL: 'redis://127.0.0.1:6379',
-    RENDER_EXTERNAL_URL: 'https://yahoo-mail-mcp.onrender.com',
+    YAHOO_EMAIL: "user@example.com",
+    YAHOO_APP_PASSWORD: "app-password-value",
+    REDIS_URL: "redis://127.0.0.1:6379",
+    RENDER_EXTERNAL_URL: "https://yahoo-mail-mcp.onrender.com",
     MCP_LOGIN_PASSPHRASE_SCRYPT:
-      'scrypt$16384$8$1$c2FsdC1mb3ItdGVzdA$3YQqZrjE8xVgkYMi4Z0ddZ6AiBIrrRD5txi1QGcVPTk',
-    OAUTH_COOKIE_KEY: 'abcdefghijklmnopqrstuvwxyz1234567890ABCDEFG',
-    HOST: '0.0.0.0',
-    ALLOWED_HOSTS: 'yahoo-mail-mcp.onrender.com',
+      "scrypt$16384$8$1$c2FsdC1mb3ItdGVzdA$3YQqZrjE8xVgkYMi4Z0ddZ6AiBIrrRD5txi1QGcVPTk",
+    OAUTH_COOKIE_KEY: "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFG",
+    HOST: "0.0.0.0",
+    ALLOWED_HOSTS: "yahoo-mail-mcp.onrender.com",
   };
 }
 ```
@@ -105,7 +107,10 @@ export interface AppDependencies {
   createMcpServer: (config: AppConfig) => McpServer;
 }
 
-export function createApp(config: AppConfig, dependencies: AppDependencies): Express;
+export function createApp(
+  config: AppConfig,
+  dependencies: AppDependencies,
+): Express;
 ```
 
 Move middleware, `/health`, `/mcp`, 404, and error handling out of `src/index.ts`. Leave `src/index.ts` responsible only for loading configuration, connecting Redis, creating the HTTP server, and graceful shutdown.
@@ -115,11 +120,13 @@ Move middleware, `/health`, `/mcp`, 404, and error handling out of `src/index.ts
 Add `tests/app.test.ts`:
 
 ```ts
-it('serves only process health data', async () => {
-  const response = await request(createTestApp()).get('/health');
+it("serves only process health data", async () => {
+  const response = await request(createTestApp()).get("/health");
   expect(response.status).toBe(200);
-  expect(response.body).toEqual({ status: 'ok' });
-  expect(JSON.stringify(response.body)).not.toMatch(/yahoo|redis|secret|email/i);
+  expect(response.body).toEqual({ status: "ok" });
+  expect(JSON.stringify(response.body)).not.toMatch(
+    /yahoo|redis|secret|email/i,
+  );
 });
 ```
 
@@ -143,6 +150,7 @@ git commit -m "refactor: prepare Node server for portable OAuth"
 ### Task 2: OAuth cryptography and storage contracts
 
 **Files:**
+
 - Create: `src/oauth/types.ts`
 - Create: `src/oauth/crypto.ts`
 - Create: `src/oauth/store.ts`
@@ -151,6 +159,7 @@ git commit -m "refactor: prepare Node server for portable OAuth"
 - Create: `tests/oauth-store.test.ts`
 
 **Interfaces:**
+
 - Produces: `sha256Token`, `randomToken`, `verifyPassphrase`, `verifyPkce`, and signed-CSRF helpers.
 - Produces: `OAuthStore` and `RedisOAuthStore` with atomic consume/rotate methods.
 - Consumes: `RedisClientType` from `redis`.
@@ -163,13 +172,29 @@ Define records in `src/oauth/types.ts` for `RegisteredClient`, `AuthorizationTra
 export interface OAuthStore {
   registerClient(client: RegisteredClient): Promise<void>;
   getClient(clientId: string): Promise<RegisteredClient | null>;
-  createTransaction(id: string, value: AuthorizationTransaction, ttlSeconds: number): Promise<void>;
+  createTransaction(
+    id: string,
+    value: AuthorizationTransaction,
+    ttlSeconds: number,
+  ): Promise<void>;
   consumeTransaction(id: string): Promise<AuthorizationTransaction | null>;
-  createAuthorizationCode(digest: string, value: AuthorizationCodeRecord, ttlSeconds: number): Promise<void>;
-  consumeAuthorizationCode(digest: string): Promise<AuthorizationCodeRecord | null>;
-  createAccessToken(digest: string, value: AccessTokenRecord, ttlSeconds: number): Promise<void>;
+  createAuthorizationCode(
+    digest: string,
+    value: AuthorizationCodeRecord,
+    ttlSeconds: number,
+  ): Promise<void>;
+  consumeAuthorizationCode(
+    digest: string,
+  ): Promise<AuthorizationCodeRecord | null>;
+  createAccessToken(
+    digest: string,
+    value: AccessTokenRecord,
+    ttlSeconds: number,
+  ): Promise<void>;
   getAccessToken(digest: string): Promise<AccessTokenRecord | null>;
-  rotateRefreshToken(input: RotateRefreshTokenInput): Promise<RotateRefreshTokenResult>;
+  rotateRefreshToken(
+    input: RotateRefreshTokenInput,
+  ): Promise<RotateRefreshTokenResult>;
   incrementRateLimit(key: string, ttlSeconds: number): Promise<number>;
   close(): Promise<void>;
 }
@@ -181,9 +206,11 @@ Test SHA-256 determinism, 32-byte random tokens, S256 PKCE, signed CSRF tamper r
 
 ```ts
 expect(await verifyPkce(verifier, await pkceChallenge(verifier))).toBe(true);
-expect(await verifyPkce(`${verifier}x`, await pkceChallenge(verifier))).toBe(false);
-expect(await verifyPassphrase('correct horse', digest)).toBe(true);
-expect(await verifyPassphrase('wrong horse', digest)).toBe(false);
+expect(await verifyPkce(`${verifier}x`, await pkceChallenge(verifier))).toBe(
+  false,
+);
+expect(await verifyPassphrase("correct horse", digest)).toBe(true);
+expect(await verifyPassphrase("wrong horse", digest)).toBe(false);
 ```
 
 - [ ] **Step 3: Run the crypto tests to verify failure**
@@ -202,10 +229,20 @@ Use `randomBytes(32)`, `createHash('sha256')`, `createHmac('sha256')`, `timingSa
 export function randomToken(): string;
 export function sha256Token(value: string): string;
 export async function pkceChallenge(verifier: string): Promise<string>;
-export async function verifyPkce(verifier: string, challenge: string): Promise<boolean>;
-export async function verifyPassphrase(passphrase: string, encoded: string): Promise<boolean>;
+export async function verifyPkce(
+  verifier: string,
+  challenge: string,
+): Promise<boolean>;
+export async function verifyPassphrase(
+  passphrase: string,
+  encoded: string,
+): Promise<boolean>;
 export function signCsrf(value: string, key: string): string;
-export function verifyCsrf(cookie: string, bodyValue: string, key: string): boolean;
+export function verifyCsrf(
+  cookie: string,
+  bodyValue: string,
+  key: string,
+): boolean;
 ```
 
 - [ ] **Step 5: Write failing atomic-store tests against an in-memory contract harness**
@@ -236,6 +273,7 @@ git commit -m "feat: add durable OAuth primitives"
 ### Task 3: Discovery and dynamic client registration
 
 **Files:**
+
 - Create: `src/oauth/metadata.ts`
 - Create: `src/oauth/registration.ts`
 - Modify: `src/app.ts`
@@ -243,6 +281,7 @@ git commit -m "feat: add durable OAuth primitives"
 - Create: `tests/oauth-registration.test.ts`
 
 **Interfaces:**
+
 - Produces: `oauthMetadataRouter(config)` and `registrationRouter(config, store)`.
 - Consumes: `OAuthStore.registerClient/getClient`, `AppConfig.publicOrigin`, and `AppConfig.resourceUrl`.
 
@@ -251,10 +290,17 @@ git commit -m "feat: add durable OAuth primitives"
 Assert exact values for:
 
 ```ts
-expect(protectedResource.resource).toBe('https://yahoo-mail-mcp.onrender.com/mcp');
-expect(protectedResource.authorization_servers).toEqual(['https://yahoo-mail-mcp.onrender.com']);
-expect(serverMetadata.code_challenge_methods_supported).toEqual(['S256']);
-expect(serverMetadata.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
+expect(protectedResource.resource).toBe(
+  "https://yahoo-mail-mcp.onrender.com/mcp",
+);
+expect(protectedResource.authorization_servers).toEqual([
+  "https://yahoo-mail-mcp.onrender.com",
+]);
+expect(serverMetadata.code_challenge_methods_supported).toEqual(["S256"]);
+expect(serverMetadata.grant_types_supported).toEqual([
+  "authorization_code",
+  "refresh_token",
+]);
 ```
 
 Test both `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`.
@@ -291,11 +337,13 @@ git commit -m "feat: add OAuth discovery and registration"
 ### Task 4: Single-user authorization and passphrase verification
 
 **Files:**
+
 - Create: `src/oauth/authorization.ts`
 - Create: `tests/oauth-authorization.test.ts`
 - Modify: `src/app.ts`
 
 **Interfaces:**
+
 - Produces: `authorizationRouter(config, store)` for `GET /authorize` and `POST /authorize`.
 - Consumes: registered client metadata, signed CSRF helpers, passphrase verifier, transaction/code store methods.
 
@@ -339,6 +387,7 @@ git commit -m "feat: add single-user OAuth authorization"
 ### Task 5: Token exchange, rotation, and resource authorization
 
 **Files:**
+
 - Create: `src/oauth/token.ts`
 - Create: `src/oauth/middleware.ts`
 - Create: `tests/oauth-token.test.ts`
@@ -347,6 +396,7 @@ git commit -m "feat: add single-user OAuth authorization"
 - Delete: `src/security/auth.ts`
 
 **Interfaces:**
+
 - Produces: `tokenRouter(config, store)` and `requireMcpBearer(config, store)`.
 - Consumes: atomic authorization-code and refresh-token store operations.
 
@@ -356,9 +406,9 @@ Test URL-encoded form enforcement, required `grant_type`, client ID, exact redir
 
 ```ts
 expect(response.body).toMatchObject({
-  token_type: 'Bearer',
+  token_type: "Bearer",
   expires_in: 900,
-  scope: 'mcp:read',
+  scope: "mcp:read",
 });
 expect(response.body.access_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
 expect(response.body.refresh_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -381,7 +431,7 @@ Call `OAuthStore.rotateRefreshToken` with the old digest, new digest, family ID,
 Test missing/malformed/wrong/expired/wrong-resource tokens, query-string token rejection, success context, and the exact challenge:
 
 ```ts
-expect(response.headers['www-authenticate']).toContain(
+expect(response.headers["www-authenticate"]).toContain(
   'resource_metadata="https://yahoo-mail-mcp.onrender.com/.well-known/oauth-protected-resource/mcp"',
 );
 ```
@@ -411,6 +461,7 @@ git commit -m "feat: protect MCP with portable OAuth"
 ### Task 6: Secret-safe operations, passphrase hashing, and Render Blueprint
 
 **Files:**
+
 - Create: `scripts/hash-passphrase.mjs`
 - Create: `tests/hash-passphrase.test.ts`
 - Create: `render.yaml`
@@ -421,6 +472,7 @@ git commit -m "feat: protect MCP with portable OAuth"
 - Modify: `package.json`
 
 **Interfaces:**
+
 - Produces: `npm run hash-passphrase`, which reads from a TTY without echo and prints only the salted scrypt digest.
 - Produces: a Render Blueprint containing one web service and one Key Value service.
 
@@ -429,7 +481,7 @@ git commit -m "feat: protect MCP with portable OAuth"
 Extract a pure exported helper from the script and assert:
 
 ```ts
-expect(await encodePassphrase('private phrase', fixedSalt)).toMatch(
+expect(await encodePassphrase("private phrase", fixedSalt)).toMatch(
   /^scrypt\$16384\$8\$1\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]+$/,
 );
 ```
@@ -484,11 +536,13 @@ git commit -m "infra: prepare secure Render deployment"
 ### Task 7: End-to-end protocol verification and deployment gate
 
 **Files:**
+
 - Create: `tests/oauth-flow.test.ts`
 - Modify: `.github/workflows/ci.yml`
 - Modify: `README.md`
 
 **Interfaces:**
+
 - Consumes: the complete Express app with an in-memory `OAuthStore` contract implementation.
 - Produces: proof that MCP Inspector-compatible OAuth reaches the five tools without Yahoo data in test output.
 

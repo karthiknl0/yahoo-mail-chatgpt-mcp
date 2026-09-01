@@ -37,6 +37,7 @@ export interface AccessTokenRecord {
 
 export interface RefreshTokenRecord {
   readonly familyId: string;
+  readonly accessDigest: string;
   readonly clientId: string;
   readonly resource: string;
   readonly scope: string;

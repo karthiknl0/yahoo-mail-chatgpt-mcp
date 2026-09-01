@@ -136,6 +136,7 @@ export class InMemoryOAuthStore implements OAuthStore {
     };
     const refreshRecord: RefreshTokenRecord = {
       familyId: input.familyId,
+      accessDigest: input.accessDigest,
       clientId: record.clientId,
       resource: record.resource,
       scope: record.scope,
@@ -220,13 +221,18 @@ export class InMemoryOAuthStore implements OAuthStore {
       scope: oldRecord.scope,
       expiresAt: this.currentTime + input.accessTtlSeconds * 1_000,
     };
+    const newRefreshRecord: RefreshTokenRecord = {
+      ...oldRecord,
+      accessDigest: input.accessDigest,
+    };
     this.refreshTokens.delete(input.oldDigest);
+    this.accessTokens.delete(oldRecord.accessDigest);
     this.usedRefreshTokens.set(input.oldDigest, {
       value: structuredClone(oldRecord),
       expiresAt: oldRecord.expiresAt,
     });
     this.refreshTokens.set(input.newDigest, {
-      value: structuredClone(oldRecord),
+      value: structuredClone(newRefreshRecord),
       expiresAt: oldRecord.expiresAt,
     });
     this.accessTokens.set(input.accessDigest, {

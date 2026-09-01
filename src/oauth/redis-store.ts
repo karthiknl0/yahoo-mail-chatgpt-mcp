@@ -66,6 +66,7 @@ local accessRecordJson = cjson.encode({
 })
 local refreshRecordJson = cjson.encode({
   familyId = ARGV[6],
+  accessDigest = ARGV[9],
   clientId = codeRecord.clientId,
   resource = codeRecord.resource,
   scope = codeRecord.scope,
@@ -167,11 +168,19 @@ local accessRecordJson = cjson.encode({
   scope = oldRecord.scope,
   expiresAt = nowMillis + accessTtlMillis
 })
+local newRefreshRecordJson = cjson.encode({
+  familyId = oldRecord.familyId,
+  accessDigest = ARGV[6],
+  clientId = oldRecord.clientId,
+  resource = oldRecord.resource,
+  scope = oldRecord.scope,
+  expiresAt = oldRecord.expiresAt
+})
 
 local writeResult = redis.pcall(
   'MSET',
   KEYS[2], oldRecordJson,
-  KEYS[3], oldRecordJson,
+  KEYS[3], newRefreshRecordJson,
   KEYS[4], accessRecordJson
 )
 if type(writeResult) == 'table' and writeResult.err then
@@ -184,7 +193,7 @@ if usedExpiry ~= 1 or refreshExpiry ~= 1 or accessExpiry ~= 1 then
   redis.call('DEL', KEYS[2], KEYS[3], KEYS[4])
   return result('storage_error')
 end
-redis.call('DEL', KEYS[1])
+redis.call('DEL', KEYS[1], ARGV[7] .. oldRecord.accessDigest)
 return result('rotated', oldRecord)
 `;
 
@@ -285,6 +294,7 @@ function isRefreshTokenRecord(value: unknown): value is RefreshTokenRecord {
   const record = value as Record<string, unknown>;
   return (
     typeof record.familyId === "string" &&
+    typeof record.accessDigest === "string" &&
     typeof record.clientId === "string" &&
     typeof record.resource === "string" &&
     typeof record.scope === "string" &&
@@ -426,6 +436,7 @@ export class RedisOAuthStore implements OAuthStore {
         input.familyId,
         String(input.accessTtlSeconds),
         String(input.refreshTtlSeconds),
+        input.accessDigest,
       ],
     });
     return parseCodeExchangeResult(result);
@@ -477,6 +488,8 @@ export class RedisOAuthStore implements OAuthStore {
         input.resource,
         input.scope,
         String(input.accessTtlSeconds),
+        input.accessDigest,
+        "access:",
       ],
     });
     return parseRotationResult(result);

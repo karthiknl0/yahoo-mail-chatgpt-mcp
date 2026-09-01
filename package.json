@@ -18,7 +18,8 @@
     "prehash-passphrase": "npm run build --silent",
     "hash-passphrase": "node scripts/hash-passphrase.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "verify": "npm run format && npm run lint && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/express": "^2.0.0",

@@ -38,6 +38,7 @@ const accessToken: AccessTokenRecord = {
 
 const refreshToken: RefreshTokenRecord = {
   familyId: "family-1",
+  accessDigest: "old-access-digest",
   clientId: transaction.clientId,
   resource: transaction.resource,
   scope: transaction.scope,
@@ -333,7 +334,10 @@ describe("OAuth store contract", () => {
         newDigest: "third-digest",
         accessDigest: "third-access-digest",
       }),
-    ).toEqual({ status: "revoked", record: refreshToken });
+    ).toEqual({
+      status: "revoked",
+      record: { ...refreshToken, accessDigest: rotation.accessDigest },
+    });
   });
 
   it("rejects mismatched refresh bindings without consuming the token", async () => {
@@ -361,6 +365,11 @@ describe("OAuth store contract", () => {
 
   it("persists the rotated access and refresh pair atomically", async () => {
     const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createAccessToken(
+      refreshToken.accessDigest,
+      accessToken,
+      rotation.accessTtlSeconds,
+    );
     await store.createRefreshToken(
       rotation.oldDigest,
       refreshToken,
@@ -377,6 +386,7 @@ describe("OAuth store contract", () => {
       scope: refreshToken.scope,
       expiresAt: 1_700_000_900_000,
     });
+    expect(await store.getAccessToken(refreshToken.accessDigest)).toBeNull();
   });
 
   it("leaves the old refresh usable when either successor digest collides", async () => {
@@ -622,6 +632,8 @@ describe("RedisOAuthStore command boundaries", () => {
           "https://service.example/mcp",
           "mcp:read",
           "900",
+          "rotated-access-digest",
+          "access:",
         ],
       },
     ]);
@@ -656,6 +668,7 @@ describe("RedisOAuthStore command boundaries", () => {
           "code-family-id",
           "900",
           String(refreshTtlSeconds),
+          "code-access-digest",
         ],
       },
     ]);

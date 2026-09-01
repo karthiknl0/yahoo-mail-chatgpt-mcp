@@ -51,6 +51,7 @@
 ### Task 1: Lock Dependencies and Prove Stateless OAuth Adapter Wiring
 
 **Files:**
+
 - Modify: `package.json`
 - Create: `package-lock.json`
 - Create: `src/types.ts`
@@ -60,6 +61,7 @@
 - Modify: `.gitignore`
 
 **Interfaces:**
+
 - Produces: `WorkerEnv`, `AuthProps`, and `createStatelessApiHandler(createServer)`.
 - `createStatelessApiHandler` returns `{ fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> }` for `OAuthProvider.apiHandler`.
 
@@ -109,14 +111,16 @@ Update scripts to this exact shape while retaining lint/format/test commands:
 - [ ] **Step 3: Write the failing stateless adapter test**
 
 ```ts
-import { describe, expect, it, vi } from 'vitest';
-import { createStatelessApiHandler } from '../src/auth/stateless-adapter.js';
+import { describe, expect, it, vi } from "vitest";
+import { createStatelessApiHandler } from "../src/auth/stateless-adapter.js";
 
-describe('stateless OAuth API adapter', () => {
-  it('passes an authenticated request to a fresh MCP handler', async () => {
-    const handler = createStatelessApiHandler(() => ({ close: vi.fn() } as never));
-    expect(handler).toHaveProperty('fetch');
-    expect(typeof handler.fetch).toBe('function');
+describe("stateless OAuth API adapter", () => {
+  it("passes an authenticated request to a fresh MCP handler", async () => {
+    const handler = createStatelessApiHandler(
+      () => ({ close: vi.fn() }) as never,
+    );
+    expect(handler).toHaveProperty("fetch");
+    expect(typeof handler.fetch).toBe("function");
   });
 });
 ```
@@ -130,17 +134,23 @@ Expected: FAIL because `src/auth/stateless-adapter.ts` does not exist.
 - [ ] **Step 5: Implement the supported adapter shape and compile it against current package types**
 
 ```ts
-import { createMcpHandler } from 'agents/mcp/server';
-import type { McpServer } from '@modelcontextprotocol/server';
-import type { WorkerEnv } from '../types.js';
+import { createMcpHandler } from "agents/mcp/server";
+import type { McpServer } from "@modelcontextprotocol/server";
+import type { WorkerEnv } from "../types.js";
 
-export function createStatelessApiHandler(createServer: (env: WorkerEnv) => McpServer) {
+export function createStatelessApiHandler(
+  createServer: (env: WorkerEnv) => McpServer,
+) {
   return {
-    async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+    async fetch(
+      request: Request,
+      env: WorkerEnv,
+      ctx: ExecutionContext,
+    ): Promise<Response> {
       const handler = createMcpHandler(() => createServer(env), {
-        route: '/mcp',
-        legacy: 'stateless',
-        responseMode: 'auto',
+        route: "/mcp",
+        legacy: "stateless",
+        responseMode: "auto",
       });
       return handler(request, env, ctx);
     },
@@ -178,14 +188,16 @@ Add a compile-time provider fixture to the test so the proof covers the actual p
 ```ts
 const apiHandler = createStatelessApiHandler(() => fakeServer());
 const provider = new OAuthProvider({
-  apiRoute: '/mcp',
+  apiRoute: "/mcp",
   apiHandler,
-  authorizeEndpoint: '/authorize',
-  tokenEndpoint: '/token',
-  clientRegistrationEndpoint: '/register',
-  defaultHandler: { fetch: async () => new Response('not configured', { status: 503 }) },
+  authorizeEndpoint: "/authorize",
+  tokenEndpoint: "/token",
+  clientRegistrationEndpoint: "/register",
+  defaultHandler: {
+    fetch: async () => new Response("not configured", { status: 503 }),
+  },
 });
-expect(provider).toHaveProperty('fetch');
+expect(provider).toHaveProperty("fetch");
 ```
 
 - [ ] **Step 6: Run focused and type tests**
@@ -209,6 +221,7 @@ git commit -m "build: add Cloudflare Worker toolchain"
 ### Task 2: Convert Configuration and MCP Tools to Worker-Native Dependency Injection
 
 **Files:**
+
 - Modify: `src/config.ts`
 - Modify: `src/mcp.ts`
 - Modify: `src/types.ts`
@@ -217,6 +230,7 @@ git commit -m "build: add Cloudflare Worker toolchain"
 - Create: `tests/mcp.test.ts`
 
 **Interfaces:**
+
 - Produces: `loadWorkerConfig(env: WorkerEnv): AppConfig`.
 - Produces: `MailReader` with `listFolders()`, `listEmails(options)`, and `readEmail(uid, folder)`.
 - Produces: `createYahooMcpServer(config: AppConfig, reader: MailReader): McpServer`.
@@ -224,17 +238,19 @@ git commit -m "build: add Cloudflare Worker toolchain"
 - [ ] **Step 1: Write failing configuration tests**
 
 ```ts
-import { describe, expect, it } from 'vitest';
-import { loadWorkerConfig } from '../src/config.js';
+import { describe, expect, it } from "vitest";
+import { loadWorkerConfig } from "../src/config.js";
 
-describe('Worker configuration', () => {
-  it('fails closed without Yahoo secrets', () => {
-    expect(() => loadWorkerConfig({} as never)).toThrow(/YAHOO_EMAIL, YAHOO_APP_PASSWORD/);
+describe("Worker configuration", () => {
+  it("fails closed without Yahoo secrets", () => {
+    expect(() => loadWorkerConfig({} as never)).toThrow(
+      /YAHOO_EMAIL, YAHOO_APP_PASSWORD/,
+    );
   });
 
-  it('does not include the deployment token in application configuration', () => {
+  it("does not include the deployment token in application configuration", () => {
     const config = loadWorkerConfig(validWorkerEnv());
-    expect(config).not.toHaveProperty('cloudflareApiToken');
+    expect(config).not.toHaveProperty("cloudflareApiToken");
   });
 });
 ```
@@ -256,7 +272,9 @@ const secretSchema = z.object({
 export function loadWorkerConfig(env: WorkerEnv) {
   const result = secretSchema.safeParse(env);
   if (!result.success) {
-    const names = result.error.issues.map((issue) => issue.path.join('.')).join(', ');
+    const names = result.error.issues
+      .map((issue) => issue.path.join("."))
+      .join(", ");
     throw new Error(`Invalid or missing required configuration: ${names}`);
   }
   return {
@@ -276,16 +294,16 @@ Remove `PORT`, `HOST`, `ALLOWED_HOSTS`, `ALLOWED_ORIGINS`, and `MCP_API_TOKEN`; 
 - [ ] **Step 4: Write failing MCP dependency-injection tests**
 
 ```ts
-it('registers exactly five read-only tools', async () => {
+it("registers exactly five read-only tools", async () => {
   const reader = fakeMailReader();
   const server = createYahooMcpServer(validConfig(), reader);
   const tools = await listRegisteredTools(server);
   expect(tools.map((tool) => tool.name).sort()).toEqual([
-    'get_morning_brief_emails',
-    'list_emails',
-    'list_folders',
-    'read_email',
-    'search_emails',
+    "get_morning_brief_emails",
+    "list_emails",
+    "list_folders",
+    "read_email",
+    "search_emails",
   ]);
 });
 ```
@@ -323,8 +341,14 @@ export interface SafeMailDetail extends SafeMailSummary {
   body: string;
 }
 
-export function createYahooMcpServer(config: AppConfig, reader: MailReader): McpServer {
-  const server = new McpServer({ name: 'yahoo-mail-chatgpt-mcp', version: '0.2.0' });
+export function createYahooMcpServer(
+  config: AppConfig,
+  reader: MailReader,
+): McpServer {
+  const server = new McpServer({
+    name: "yahoo-mail-chatgpt-mcp",
+    version: "0.2.0",
+  });
   // Register the existing five tools against reader; register no write tools.
   return server;
 }
@@ -347,6 +371,7 @@ git commit -m "refactor: make MCP tools Worker native"
 ### Task 3: Add Worker Routing, Request Guards, and Rate Limiting
 
 **Files:**
+
 - Create: `src/worker.ts`
 - Modify: `src/index.ts`
 - Modify: `src/auth/stateless-adapter.ts`
@@ -356,6 +381,7 @@ git commit -m "refactor: make MCP tools Worker native"
 - Create: `worker-configuration.d.ts`
 
 **Interfaces:**
+
 - Produces: `createMcpApiHandler(): ExportedHandler<WorkerEnv>`.
 - Produces: `securityHeaders(response: Response): Response`.
 - Consumes: `loadWorkerConfig`, `createYahooMcpServer`, and `MCP_RATE_LIMITER.limit({ key })`.
@@ -363,16 +389,16 @@ git commit -m "refactor: make MCP tools Worker native"
 - [ ] **Step 1: Write failing route and guard tests**
 
 ```ts
-it('returns a minimal health response', async () => {
-  const response = await SELF.fetch('https://example.com/health');
+it("returns a minimal health response", async () => {
+  const response = await SELF.fetch("https://example.com/health");
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ status: 'ok' });
+  expect(await response.json()).toEqual({ status: "ok" });
 });
 
-it('rejects oversized MCP requests before protocol parsing', async () => {
-  const response = await SELF.fetch('https://example.com/mcp', {
-    method: 'POST',
-    headers: { 'content-length': String(256 * 1024 + 1) },
+it("rejects oversized MCP requests before protocol parsing", async () => {
+  const response = await SELF.fetch("https://example.com/mcp", {
+    method: "POST",
+    headers: { "content-length": String(256 * 1024 + 1) },
   });
   expect(response.status).toBe(413);
 });
@@ -389,19 +415,32 @@ Expected: FAIL because the Worker entry does not exist.
 ```ts
 const MAX_MCP_BODY_BYTES = 256 * 1024;
 
-export async function guardMcpRequest(request: Request, env: WorkerEnv): Promise<Response | null> {
-  if (request.method !== 'POST') {
-    return Response.json({ error: 'method_not_allowed' }, { status: 405, headers: { Allow: 'POST' } });
+export async function guardMcpRequest(
+  request: Request,
+  env: WorkerEnv,
+): Promise<Response | null> {
+  if (request.method !== "POST") {
+    return Response.json(
+      { error: "method_not_allowed" },
+      { status: 405, headers: { Allow: "POST" } },
+    );
   }
-  const length = Number(request.headers.get('content-length') ?? '0');
+  const length = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(length) && length > MAX_MCP_BODY_BYTES) {
-    return Response.json({ error: 'request_too_large' }, { status: 413 });
+    return Response.json({ error: "request_too_large" }, { status: 413 });
   }
-  const authorization = request.headers.get('authorization') ?? '';
-  const keyBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(authorization));
-  const key = Array.from(new Uint8Array(keyBytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  const authorization = request.headers.get("authorization") ?? "";
+  const keyBytes = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(authorization),
+  );
+  const key = Array.from(new Uint8Array(keyBytes), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
   const outcome = await env.MCP_RATE_LIMITER.limit({ key });
-  return outcome.success ? null : Response.json({ error: 'rate_limited' }, { status: 429 });
+  return outcome.success
+    ? null
+    : Response.json({ error: "rate_limited" }, { status: 429 });
 }
 ```
 
@@ -423,9 +462,9 @@ Create `wrangler.jsonc` with the production entry and rate-limit binding; add th
     {
       "name": "MCP_RATE_LIMITER",
       "namespace_id": "1001",
-      "simple": { "limit": 60, "period": 60 }
-    }
-  ]
+      "simple": { "limit": 60, "period": 60 },
+    },
+  ],
 }
 ```
 
@@ -436,7 +475,7 @@ Until Task 4 composes the OAuth provider, replace the removed Express entry poin
 ```ts
 export default {
   async fetch(): Promise<Response> {
-    return Response.json({ error: 'oauth_not_configured' }, { status: 503 });
+    return Response.json({ error: "oauth_not_configured" }, { status: 503 });
   },
 } satisfies ExportedHandler;
 ```
@@ -463,6 +502,7 @@ git commit -m "feat: add guarded Cloudflare Worker MCP route"
 ### Task 4: Implement Cloudflare Access OAuth with Durable State
 
 **Files:**
+
 - Create: `src/auth/access-handler.ts`
 - Create: `src/auth/oauth-state.ts`
 - Create: `src/auth/oidc.ts`
@@ -471,6 +511,7 @@ git commit -m "feat: add guarded Cloudflare Worker MCP route"
 - Modify: `tests/worker.test.ts`
 
 **Interfaces:**
+
 - Produces: `handleAccessRequest(request, env, ctx): Promise<Response>`.
 - Produces: `createOAuthState`, `consumeOAuthState`, `generatePkce`, `validateCsrf`, and `verifyAccessIdToken`.
 - `AuthProps` contains only `email`, `name`, and `subject`; it never contains an upstream access token.
@@ -478,18 +519,26 @@ git commit -m "feat: add guarded Cloudflare Worker MCP route"
 - [ ] **Step 1: Write failing OAuth security tests**
 
 ```ts
-it('consumes signed OAuth state once', async () => {
-  const state = await createOAuthState(authRequest, env.OAUTH_KV, env.COOKIE_ENCRYPTION_KEY);
-  await expect(consumeOAuthState(state.token, env.OAUTH_KV, env.COOKIE_ENCRYPTION_KEY)).resolves.toMatchObject({
+it("consumes signed OAuth state once", async () => {
+  const state = await createOAuthState(
+    authRequest,
+    env.OAUTH_KV,
+    env.COOKIE_ENCRYPTION_KEY,
+  );
+  await expect(
+    consumeOAuthState(state.token, env.OAUTH_KV, env.COOKIE_ENCRYPTION_KEY),
+  ).resolves.toMatchObject({
     request: authRequest,
   });
-  await expect(consumeOAuthState(state.token, env.OAUTH_KV, env.COOKIE_ENCRYPTION_KEY)).rejects.toThrow(
-    /invalid or expired state/i,
-  );
+  await expect(
+    consumeOAuthState(state.token, env.OAUTH_KV, env.COOKIE_ENCRYPTION_KEY),
+  ).rejects.toThrow(/invalid or expired state/i);
 });
 
-it('rejects a validly signed ID token with the wrong audience', async () => {
-  await expect(verifyAccessIdToken(tokenWithWrongAudience, env)).rejects.toThrow(/invalid token/);
+it("rejects a validly signed ID token with the wrong audience", async () => {
+  await expect(
+    verifyAccessIdToken(tokenWithWrongAudience, env),
+  ).rejects.toThrow(/invalid token/);
 });
 ```
 
@@ -519,8 +568,16 @@ export async function createOAuthState(
   const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)));
   const nonce = crypto.randomUUID();
   const signature = await hmac(id, secret);
-  await kv.put(`oauth:state:${id}`, JSON.stringify({ request, verifier, nonce }), { expirationTtl: 600 });
-  return { token: `${id}.${signature}`, challenge: await sha256Base64Url(verifier), nonce };
+  await kv.put(
+    `oauth:state:${id}`,
+    JSON.stringify({ request, verifier, nonce }),
+    { expirationTtl: 600 },
+  );
+  return {
+    token: `${id}.${signature}`,
+    challenge: await sha256Base64Url(verifier),
+    nonce,
+  };
 }
 ```
 
@@ -536,7 +593,7 @@ const requiredClaims = z.object({
   aud: z.union([z.string(), z.array(z.string())]),
   sub: z.string().min(1),
   email: z.string().email(),
-  name: z.string().default('Yahoo Mail user'),
+  name: z.string().default("Yahoo Mail user"),
   exp: z.number().int(),
   iat: z.number().int(),
   nonce: z.string().min(1),
@@ -552,8 +609,12 @@ const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
   request: oauthRequest,
   userId: claims.sub,
   scope: oauthRequest.scope,
-  props: { email: claims.email, name: claims.name, subject: claims.sub } satisfies AuthProps,
-  metadata: { label: 'Yahoo Mail read-only' },
+  props: {
+    email: claims.email,
+    name: claims.name,
+    subject: claims.sub,
+  } satisfies AuthProps,
+  metadata: { label: "Yahoo Mail read-only" },
 });
 ```
 
@@ -562,16 +623,16 @@ The approval page must HTML-escape client metadata, allow only `https:` client m
 - [ ] **Step 6: Compose the provider in `src/index.ts`**
 
 ```ts
-import OAuthProvider from '@cloudflare/workers-oauth-provider';
-import { createMcpApiHandler } from './worker.js';
-import { handleAccessRequest } from './auth/access-handler.js';
+import OAuthProvider from "@cloudflare/workers-oauth-provider";
+import { createMcpApiHandler } from "./worker.js";
+import { handleAccessRequest } from "./auth/access-handler.js";
 
 export default new OAuthProvider({
-  apiRoute: '/mcp',
+  apiRoute: "/mcp",
   apiHandler: createMcpApiHandler(),
-  authorizeEndpoint: '/authorize',
-  tokenEndpoint: '/token',
-  clientRegistrationEndpoint: '/register',
+  authorizeEndpoint: "/authorize",
+  tokenEndpoint: "/token",
+  clientRegistrationEndpoint: "/register",
   defaultHandler: { fetch: handleAccessRequest },
 });
 ```
@@ -597,6 +658,7 @@ git commit -m "feat: protect MCP with Cloudflare Access OAuth"
 ### Task 5: Prove Yahoo IMAP Compatibility and Expand Sanitization
 
 **Files:**
+
 - Modify: `src/yahoo.ts`
 - Modify: `src/security/redact.ts`
 - Create: `tests/yahoo.test.ts`
@@ -604,18 +666,22 @@ git commit -m "feat: protect MCP with Cloudflare Access OAuth"
 - Create: `tests/secret-leak.test.ts`
 
 **Interfaces:**
+
 - `YahooMailReader` implements `MailReader`.
 - Produces: `createImapClient(config, factory?)` so TLS and read-only options are testable without Yahoo credentials.
 
 - [ ] **Step 1: Write failing Yahoo security tests**
 
 ```ts
-it('opens every mailbox read-only with verified TLS', async () => {
+it("opens every mailbox read-only with verified TLS", async () => {
   const fake = fakeImapClient();
   const reader = new YahooMailReader(validConfig(), () => fake);
-  await reader.listEmails({ folder: 'INBOX', limit: 1 });
-  expect(fake.mailboxOpen).toHaveBeenCalledWith('INBOX', { readOnly: true });
-  expect(fake.options.tls).toMatchObject({ rejectUnauthorized: true, minVersion: 'TLSv1.2' });
+  await reader.listEmails({ folder: "INBOX", limit: 1 });
+  expect(fake.mailboxOpen).toHaveBeenCalledWith("INBOX", { readOnly: true });
+  expect(fake.options.tls).toMatchObject({
+    rejectUnauthorized: true,
+    minVersion: "TLSv1.2",
+  });
 });
 ```
 
@@ -624,9 +690,15 @@ Also assert logout/close on success, timeout, parse failure, and search failure;
 - [ ] **Step 2: Add sanitizer bypass tests before modifying sanitization**
 
 ```ts
-expect(sanitizeEmailText('Verification c.o.d.e: 6 5 4 3 2 1')).not.toContain('6 5 4 3 2 1');
-expect(sanitizeEmailText('https://example.com/%70assword/reset?%74oken=secret')).toBe('[REDACTED LINK]');
-expect(sanitizeEmailText('<p>OTP&nbsp;12&#45;34&#45;56</p>')).not.toContain('12-34-56');
+expect(sanitizeEmailText("Verification c.o.d.e: 6 5 4 3 2 1")).not.toContain(
+  "6 5 4 3 2 1",
+);
+expect(
+  sanitizeEmailText("https://example.com/%70assword/reset?%74oken=secret"),
+).toBe("[REDACTED LINK]");
+expect(sanitizeEmailText("<p>OTP&nbsp;12&#45;34&#45;56</p>")).not.toContain(
+  "12-34-56",
+);
 ```
 
 - [ ] **Step 3: Run focused tests and confirm the new bypass cases fail**
@@ -653,8 +725,12 @@ Expected: Wrangler dry-run PASS and no forbidden server/listener/SSE code. If Im
 - [ ] **Step 6: Add secret-leak tests**
 
 ```ts
-it('does not expose sentinel secrets in errors, logs, health, or MCP output', async () => {
-  const sentinels = ['YAHOO_SECRET_SENTINEL', 'OAUTH_SECRET_SENTINEL', 'OTP_492811'];
+it("does not expose sentinel secrets in errors, logs, health, or MCP output", async () => {
+  const sentinels = [
+    "YAHOO_SECRET_SENTINEL",
+    "OAUTH_SECRET_SENTINEL",
+    "OTP_492811",
+  ];
   const observed = await exerciseFailurePaths(sentinels);
   for (const secret of sentinels) expect(observed).not.toContain(secret);
 });
@@ -672,6 +748,7 @@ git commit -m "test: harden Yahoo Worker data handling"
 ### Task 6: Make CI Deterministic and Document Worker Operations
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml`
 - Modify: `README.md`
 - Modify: `SECURITY.md`
@@ -679,6 +756,7 @@ git commit -m "test: harden Yahoo Worker data handling"
 - Delete: `Dockerfile`
 
 **Interfaces:**
+
 - CI produces no deployment and requires no real credentials.
 - README documents exact secret names and safe interactive commands, never example secret values resembling real credentials.
 
@@ -733,10 +811,12 @@ git commit -m "docs: add Cloudflare Worker operations"
 ### Task 7: Provision Cloudflare Resources and Deploy in Fail-Closed Stages
 
 **Files:**
+
 - Modify: `wrangler.jsonc` with the actual created KV namespace ID
 - No secret-bearing files created or modified
 
 **Interfaces:**
+
 - Consumes the locally stored Cloudflare account identifier and restricted API token without printing them.
 - Produces the `OAUTH_KV` namespace, Worker deployment, Access for SaaS app, and production Worker secrets.
 
@@ -809,10 +889,12 @@ Invoke `list_folders`, then `list_emails` with `limit: 1`, then `read_email` onl
 ### Task 8: Connect ChatGPT and Complete the Security Review
 
 **Files:**
+
 - Modify: `README.md` only if the observed ChatGPT flow differs from documented official behavior
 - Create: `docs/deployment-verification.md`
 
 **Interfaces:**
+
 - Produces a user-visible ChatGPT custom MCP connection and a secret-free verification record.
 
 - [ ] **Step 1: Connect the deployed endpoint in ChatGPT**

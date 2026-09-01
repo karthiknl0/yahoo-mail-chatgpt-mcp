@@ -1,4 +1,4 @@
-const REDACTED = '[REDACTED]';
+const REDACTED = "[REDACTED]";
 
 const authKeywordPattern =
   /\b(?:otp|one[- ]?time(?: password| passcode)?|verification|verify|security|login|authentication|auth|passcode|pin|code)\b/i;
@@ -9,24 +9,25 @@ const sensitiveUrlKeywordPattern =
 const urlPattern = /https?:\/\/[^\s<>"']+/gi;
 const longDigitPattern = /\b(?:\d[ -]?){12,19}\b/g;
 const contextualCodePattern = /\b\d(?:[\s.-]?\d){3,7}\b/g;
-const bearerLikePattern = /\b(?:bearer\s+)?[A-Za-z0-9_-]{24,}\.[A-Za-z0-9._-]{8,}\b/gi;
+const bearerLikePattern =
+  /\b(?:bearer\s+)?[A-Za-z0-9_-]{24,}\.[A-Za-z0-9._-]{8,}\b/gi;
 
 function normalizeCode(candidate: string): string {
-  return candidate.replace(/[^0-9]/g, '');
+  return candidate.replace(/[^0-9]/g, "");
 }
 
 export function stripHtml(input: string): string {
   return input
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
-    .replace(/\s+/g, ' ')
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -36,10 +37,12 @@ function redactSensitiveUrls(text: string): string {
       const parsed = new URL(url);
       const sensitive =
         sensitiveUrlKeywordPattern.test(parsed.pathname) ||
-        [...parsed.searchParams.keys()].some((key) => sensitiveUrlKeywordPattern.test(key));
-      return sensitive ? '[REDACTED LINK]' : url;
+        [...parsed.searchParams.keys()].some((key) =>
+          sensitiveUrlKeywordPattern.test(key),
+        );
+      return sensitive ? "[REDACTED LINK]" : url;
     } catch {
-      return '[REDACTED LINK]';
+      return "[REDACTED LINK]";
     }
   });
 }
@@ -62,7 +65,7 @@ export function sanitizeEmailText(input: string): string {
   text = text.replace(bearerLikePattern, REDACTED);
   text = text.replace(longDigitPattern, REDACTED);
   text = redactContextualCodes(text);
-  return text.replace(/\s+/g, ' ').trim();
+  return text.replace(/\s+/g, " ").trim();
 }
 
 export function truncateSanitized(input: string, maxChars: number): string {

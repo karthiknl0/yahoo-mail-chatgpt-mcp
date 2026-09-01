@@ -190,13 +190,10 @@ The health endpoint intentionally contains no email address, Yahoo state, token 
 ## Testing
 
 ```bash
-npm run lint
-npm run typecheck
-npm test
-npm run build
+npm run verify
 ```
 
-Tests do not require real Yahoo credentials. CI performs these checks for pushes and pull requests.
+The aggregate gate checks formatting, linting, types, tests, and the production build. The end-to-end OAuth test uses only an in-memory store and a mailbox-free five-tool MCP stub; it performs dynamic registration, CSRF-protected passphrase authorization, PKCE exchange, MCP initialization and tool discovery, credential rotation, and replay rejection without contacting Yahoo, Redis, or Render. CI installs with `npm ci` on Node 20 and runs the same gate for pushes and pull requests.
 
 ## Docker
 

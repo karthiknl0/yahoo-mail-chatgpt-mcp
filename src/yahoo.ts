@@ -1,7 +1,7 @@
-import { ImapFlow, type FetchMessageObject } from 'imapflow';
-import { simpleParser } from 'mailparser';
-import type { AppConfig } from './config.js';
-import { truncateSanitized } from './security/redact.js';
+import { ImapFlow, type FetchMessageObject } from "imapflow";
+import { simpleParser } from "mailparser";
+import type { AppConfig } from "./config.js";
+import { truncateSanitized } from "./security/redact.js";
 
 export interface SafeMailSummary {
   uid: number;
@@ -21,7 +21,7 @@ export interface SafeMailDetail extends SafeMailSummary {
 
 function makeClient(config: AppConfig): ImapFlow {
   return new ImapFlow({
-    host: 'imap.mail.yahoo.com',
+    host: "imap.mail.yahoo.com",
     port: 993,
     secure: true,
     auth: {
@@ -31,7 +31,7 @@ function makeClient(config: AppConfig): ImapFlow {
     logger: false,
     tls: {
       rejectUnauthorized: true,
-      minVersion: 'TLSv1.2',
+      minVersion: "TLSv1.2",
     },
     connectionTimeout: config.imapConnectTimeoutMs,
     greetingTimeout: config.imapConnectTimeoutMs,
@@ -39,11 +39,14 @@ function makeClient(config: AppConfig): ImapFlow {
   });
 }
 
-function firstAddress(message: FetchMessageObject): { name: string; address: string } {
+function firstAddress(message: FetchMessageObject): {
+  name: string;
+  address: string;
+} {
   const first = message.envelope?.from?.[0];
   return {
-    name: first?.name ?? '',
-    address: first?.address ?? '',
+    name: first?.name ?? "",
+    address: first?.address ?? "",
   };
 }
 
@@ -58,18 +61,20 @@ async function toSummary(
   folder: string,
   maxPreviewChars: number,
 ): Promise<SafeMailSummary> {
-  const parsed = message.source ? await simpleParser(message.source) : undefined;
+  const parsed = message.source
+    ? await simpleParser(message.source)
+    : undefined;
   const sender = firstAddress(message);
-  const text = parsed?.text ?? parsed?.html?.toString() ?? '';
+  const text = parsed?.text ?? parsed?.html?.toString() ?? "";
 
   return {
     uid: message.uid,
     folder,
     senderName: sender.name,
     senderEmail: sender.address,
-    subject: message.envelope?.subject ?? '(no subject)',
+    subject: message.envelope?.subject ?? "(no subject)",
     receivedAt: toIsoDate(message.internalDate ?? message.envelope?.date),
-    unread: !message.flags?.has('\\Seen'),
+    unread: !message.flags?.has("\\Seen"),
     hasAttachments: (parsed?.attachments.length ?? 0) > 0,
     preview: truncateSanitized(text, maxPreviewChars),
   };
@@ -78,7 +83,10 @@ async function toSummary(
 export class YahooMailReader {
   constructor(private readonly config: AppConfig) {}
 
-  private async withMailbox<T>(folder: string, fn: (client: ImapFlow) => Promise<T>): Promise<T> {
+  private async withMailbox<T>(
+    folder: string,
+    fn: (client: ImapFlow) => Promise<T>,
+  ): Promise<T> {
     const client = makeClient(this.config);
     try {
       await client.connect();
@@ -115,8 +123,11 @@ export class YahooMailReader {
     since?: Date;
     query?: string;
   }): Promise<SafeMailSummary[]> {
-    const folder = options.folder ?? 'INBOX';
-    const limit = Math.min(options.limit ?? 10, this.config.maxEmailsPerRequest);
+    const folder = options.folder ?? "INBOX";
+    const limit = Math.min(
+      options.limit ?? 10,
+      this.config.maxEmailsPerRequest,
+    );
 
     return this.withMailbox(folder, async (client) => {
       const criteria: Record<string, unknown> = {};
@@ -132,28 +143,52 @@ export class YahooMailReader {
       for (const uid of selected) {
         const message = await client.fetchOne(
           uid,
-          { uid: true, envelope: true, flags: true, internalDate: true, source: true },
+          {
+            uid: true,
+            envelope: true,
+            flags: true,
+            internalDate: true,
+            source: true,
+          },
           { uid: true },
         );
-        if (message) results.push(await toSummary(message, folder, this.config.maxPreviewChars));
+        if (message)
+          results.push(
+            await toSummary(message, folder, this.config.maxPreviewChars),
+          );
       }
 
       return results;
     });
   }
 
-  async readEmail(uid: number, folder = 'INBOX'): Promise<SafeMailDetail | null> {
+  async readEmail(
+    uid: number,
+    folder = "INBOX",
+  ): Promise<SafeMailDetail | null> {
     return this.withMailbox(folder, async (client) => {
       const message = await client.fetchOne(
         uid,
-        { uid: true, envelope: true, flags: true, internalDate: true, source: true },
+        {
+          uid: true,
+          envelope: true,
+          flags: true,
+          internalDate: true,
+          source: true,
+        },
         { uid: true },
       );
       if (!message) return null;
 
-      const summary = await toSummary(message, folder, this.config.maxPreviewChars);
-      const parsed = message.source ? await simpleParser(message.source) : undefined;
-      const text = parsed?.text ?? parsed?.html?.toString() ?? '';
+      const summary = await toSummary(
+        message,
+        folder,
+        this.config.maxPreviewChars,
+      );
+      const parsed = message.source
+        ? await simpleParser(message.source)
+        : undefined;
+      const text = parsed?.text ?? parsed?.html?.toString() ?? "";
       return {
         ...summary,
         body: truncateSanitized(text, this.config.maxReadChars),
