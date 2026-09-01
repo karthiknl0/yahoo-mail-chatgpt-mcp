@@ -47,6 +47,8 @@ describe("email redaction", () => {
   it("redacts opaque bearer credentials without dots", () => {
     const token = "abcdefghijklmnopqrstuvwxyz0123456789";
     const mixedToken = "AbCdEfGhIjKlMnOp+/~_-=";
+    const dottedToken = "abcdefghijklmnop.abcdefghi";
+    const encodedDottedToken = "AbCdEfGhIjKlMnOp+/~_-.c2Vjb25kLXNlZ21lbnQ==";
 
     for (const input of [`Bearer ${token}`, `Authorization: Bearer ${token}`]) {
       expect(sanitizeEmailText(input)).not.toContain(token);
@@ -58,6 +60,15 @@ describe("email redaction", () => {
     expect(mixedOutput).not.toContain(mixedToken);
     expect(mixedOutput).not.toContain("+/~_-=");
     expect(mixedOutput).toBe("[REDACTED], preserve this sentence.");
+
+    expect(
+      sanitizeEmailText(`Bearer ${dottedToken}. Preserve this period.`),
+    ).toBe("[REDACTED]. Preserve this period.");
+    expect(
+      sanitizeEmailText(
+        `Authorization: Bearer ${encodedDottedToken}, preserve this comma.`,
+      ),
+    ).toBe("[REDACTED], preserve this comma.");
 
     expect(sanitizeEmailText("The bearer market moved today.")).toContain(
       "bearer market",
