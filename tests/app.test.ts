@@ -2,6 +2,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
+import { InMemoryOAuthStore } from "./helpers/in-memory-oauth-store.js";
 
 function createTestApp() {
   return createApp(
@@ -17,7 +18,7 @@ function createTestApp() {
       ALLOWED_HOSTS: "localhost,127.0.0.1",
     }),
     {
-      oauthStore: { close: async () => undefined },
+      oauthStore: new InMemoryOAuthStore(),
       createMcpServer: () => {
         throw new Error("MCP server must not be created for a health request");
       },

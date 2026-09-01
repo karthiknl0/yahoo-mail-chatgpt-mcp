@@ -5,11 +5,9 @@ import type { Express, NextFunction, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import type { AppConfig } from "./config.js";
-
-/** The Task 2 OAuth store contract extends this lifecycle boundary. */
-export interface OAuthStore {
-  close(): Promise<void>;
-}
+import { oauthMetadataRouter } from "./oauth/metadata.js";
+import { registrationRouter } from "./oauth/registration.js";
+import type { OAuthStore } from "./oauth/store.js";
 
 export interface AppDependencies {
   oauthStore: OAuthStore;
@@ -53,6 +51,7 @@ export function createApp(
     host: config.host,
     allowedHosts: config.allowedHosts,
     allowedOrigins: config.allowedOrigins,
+    jsonLimit: "32kb",
   });
 
   app.disable("x-powered-by");
@@ -66,6 +65,9 @@ export function createApp(
   app.get("/health", (_req, res) => {
     res.status(200).json({ status: "ok" });
   });
+
+  app.use(oauthMetadataRouter(config));
+  app.use(registrationRouter(config, dependencies.oauthStore));
 
   const limiter = rateLimit({
     windowMs: 60_000,
@@ -89,6 +91,15 @@ export function createApp(
 
   app.use(
     (error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "status" in error &&
+        error.status === 413
+      ) {
+        res.status(413).json({ error: "request_too_large" });
+        return;
+      }
       console.error(
         "Request failed",
         error instanceof Error ? error.name : "UnknownError",
