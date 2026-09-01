@@ -80,7 +80,7 @@ Failure of Key Value, token validation, configuration, or Yahoo authentication d
 
 The repository already has a GitHub remote and a Render-ready Node/Express implementation on `main`. A dedicated implementation branch will add OAuth, Key Value support, tests, and Render configuration. The Render deployment is one web service plus one Key Value instance in the same region.
 
-No Render resources are created until the implementation is verified and the user approves the selected service and Key Value plans. Auto-deploy is enabled only after the reviewed implementation branch is pushed. The web service uses `npm ci`, `npm run build`, and `npm start`, with `/health` as the health-check path.
+No Render resources are created until the implementation is verified and the user approves the selected service and Key Value plans. The Blueprint pins the web service to `codex/render-single-yahoo-mcp`: auto-deploy begins only after the reviewed commit is pushed there, and continues to deploy that reviewed branch/commit until an explicit, separately reviewed merge-and-branch-switch change updates the Blueprint. The web service uses `npm ci`, `npm run build`, and `npm start`, with `/health` as the health-check path.
 
 ## Verification
 

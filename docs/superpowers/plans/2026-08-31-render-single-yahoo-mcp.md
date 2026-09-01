@@ -496,7 +496,7 @@ Use TTY raw mode, mask input, restore terminal state in `finally`, reject input 
 
 - [ ] **Step 3: Add the Render Blueprint**
 
-Create `render.yaml` with a Node web service using `npm ci && npm run build`, `npm start`, `/health`, `HOST=0.0.0.0`, Render's automatic `RENDER_EXTERNAL_URL`, and `REDIS_URL` from the Key Value connection string. Mark `YAHOO_EMAIL`, `YAHOO_APP_PASSWORD`, `MCP_LOGIN_PASSPHRASE_SCRYPT`, `OAUTH_COOKIE_KEY`, and `ALLOWED_HOSTS` as dashboard-supplied secrets/values. Configure Key Value with `noeviction` so OAuth state is never silently evicted under pressure.
+Create `render.yaml` with a Node web service pinned to `codex/render-single-yahoo-mcp`, using `npm ci && npm run build`, `npm start`, `/health`, `HOST=0.0.0.0`, Render's automatic `RENDER_EXTERNAL_URL`, and `REDIS_URL` from the Key Value connection string. The Blueprint deploys the reviewed commit on that branch until it is explicitly merged; a later separately reviewed change must switch `branch` before Render follows a different branch. Mark `YAHOO_EMAIL`, `YAHOO_APP_PASSWORD`, `MCP_LOGIN_PASSPHRASE_SCRYPT`, `OAUTH_COOKIE_KEY`, and `ALLOWED_HOSTS` as dashboard-supplied secrets/values. Configure Key Value with `noeviction` so OAuth state is never silently evicted under pressure.
 
 - [ ] **Step 4: Replace Cloudflare/static-token documentation**
 
@@ -583,7 +583,7 @@ Present the verified commit, Render web-service plan, Key Value plan, region, an
 
 - [ ] **Step 7: After approval, push the reviewed branch and create the Blueprint resources**
 
-Push the implementation branch, validate `render.yaml`, create the Render Blueprint in `My Workspace`, and leave all secret-backed fields unset so deployment fails closed.
+Push the reviewed commit to `codex/render-single-yahoo-mcp`, validate `render.yaml`, create the Render Blueprint in `My Workspace`, and leave all secret-backed fields unset so deployment fails closed. The Blueprint continues to deploy that reviewed branch/commit until an explicit, separately reviewed merge-and-branch-switch change is made.
 
 - [ ] **Step 8: Collect secrets through hidden/local controls**
 
