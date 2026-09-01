@@ -11,9 +11,12 @@ ChatGPT / MCP host
         |
         | HTTPS + bearer authentication
         v
-Remote MCP endpoint: /mcp
+OAuth 2.1 + Streamable HTTP endpoint: /mcp
         |
-        | read-only tool calls
+        | read-only, bearer-authorized tool calls
+        v
+Render Key Value (OAuth state only)
+        |
         v
 Yahoo Mail reader
         |
@@ -52,7 +55,7 @@ The main threats considered are:
 - weak or invalid TLS to Yahoo;
 - unsafe mailbox modifications.
 
-Current mitigations include bearer authentication, constant-time token comparison, Host/Origin validation provided by the MCP Express integration, rate limiting, request-size checks, security headers, bounded tool inputs, TLS verification, read-only IMAP mailbox opens, deterministic sanitization and secret-free error responses.
+Current mitigations include OAuth 2.1 authorization-code flow with S256 PKCE, rotating opaque tokens, a single-user passphrase gate, constant-time comparisons, Host/Origin validation provided by the MCP Express integration, rate limiting, request-size checks, security headers, bounded tool inputs, TLS verification, read-only IMAP mailbox opens, deterministic sanitization and secret-free error responses.
 
 ## What ChatGPT can access
 
@@ -144,10 +147,19 @@ Then provide values locally or, preferably, through your hosting provider's secr
 ```env
 YAHOO_EMAIL=you@example.com
 YAHOO_APP_PASSWORD=your-yahoo-app-specific-password
-MCP_API_TOKEN=a-long-random-token-at-least-32-characters
+REDIS_URL=redis://127.0.0.1:6379
+PUBLIC_ORIGIN=https://localhost.example.test
+MCP_LOGIN_PASSPHRASE_SCRYPT=a-generated-scrypt-digest
+OAUTH_COOKIE_KEY=a-random-secret-at-least-32-characters
 ```
 
-Generate `MCP_API_TOKEN` using a cryptographically secure password/token generator. Do not reuse another password.
+Generate the passphrase digest interactively, after installing dependencies:
+
+```bash
+npm run hash-passphrase
+```
+
+The command requires a TTY, disables input echo, restores the terminal state even on cancellation, accepts a minimum 16-character passphrase, and writes only a salted `scrypt` digest to standard output. Store that digest as `MCP_LOGIN_PASSPHRASE_SCRYPT`; never store the plaintext passphrase. Generate `OAUTH_COOKIE_KEY` with a cryptographically secure random-value generator and do not reuse another secret.
 
 ## Local development
 
@@ -170,7 +182,7 @@ curl http://127.0.0.1:3000/health
 Expected response:
 
 ```json
-{"status":"ok"}
+{ "status": "ok" }
 ```
 
 The health endpoint intentionally contains no email address, Yahoo state, token details, IMAP diagnostics or environment information.
@@ -212,20 +224,23 @@ ALLOWED_HOSTS=mcp.example.com
 
 Terminate TLS at a trusted reverse proxy or managed hosting platform and expose **HTTPS only**.
 
-## Managed deployment
+## Render deployment
 
-The service can run on Render, Railway, Fly.io or a conventional VPS/container host. It does not depend on any specific existing server.
+[`render.yaml`](render.yaml) defines exactly one Node web service and one internal-only Render Key Value instance in the same region. It uses Render's `RENDER_EXTERNAL_URL`, binds the process to `0.0.0.0:$PORT`, wires `REDIS_URL` from the Key Value connection string, and exposes `/health` for process health only.
 
-Production checklist:
+The Blueprint intentionally leaves these dashboard-managed values unset: `YAHOO_EMAIL`, `YAHOO_APP_PASSWORD`, `MCP_LOGIN_PASSPHRASE_SCRYPT`, `OAUTH_COOKIE_KEY`, and `ALLOWED_HOSTS`. Before creating any deployment, set `ALLOWED_HOSTS` to the exact assigned Render hostname and enter the remaining values through Render's secret controls. Do not add `RENDER_EXTERNAL_URL` manually.
 
-- deploy from a reviewed commit;
-- configure `YAHOO_EMAIL`, `YAHOO_APP_PASSWORD` and `MCP_API_TOKEN` using the platform's secret storage;
-- set `HOST=0.0.0.0` only when required by the platform;
-- set `ALLOWED_HOSTS` to the exact public MCP hostname;
-- keep HTTPS enabled at all times;
-- do not enable request/body logging at the proxy;
-- rotate the MCP token and Yahoo app password after any suspected compromise;
-- keep V1 read-only.
+The checked-in plans are free for initial evaluation. The free Key Value plan supports `noeviction`, which makes writes fail rather than silently evict OAuth state, but it has no disk persistence ([Render Key Value documentation](https://render.com/docs/key-value)). A Key Value restart invalidates outstanding OAuth state and requires clients to authorize again. Select and approve a paid, persistent plan before treating this as a production deployment.
+
+Safe smoke-test order:
+
+1. Confirm `/health` returns only `{"status":"ok"}`.
+2. Confirm unauthenticated `/mcp` returns `401` and protected-resource metadata.
+3. Confirm OAuth discovery, registration, and passphrase + PKCE authorization.
+4. Confirm `tools/list` reports exactly the five read-only tools.
+5. Run `list_folders`, then one bounded `get_morning_brief_emails` call; record only pass/fail.
+
+Rollback: disable the web service or revert to the last reviewed Blueprint commit. If OAuth state may be compromised, replace or restart Key Value, rotate the passphrase digest and cookie key, then require clients to authorize again.
 
 ## Connecting to ChatGPT
 
@@ -235,21 +250,19 @@ ChatGPT custom apps connect to **remote** MCP servers. In ChatGPT developer mode
 https://mcp.example.com/mcp
 ```
 
-The exact authentication options offered by ChatGPT can evolve. This repository currently implements a static bearer-token gate suitable for private deployments and MCP clients that can send an `Authorization: Bearer ...` header.
+This service is its own OAuth 2.1 authorization and resource server. It advertises protected-resource metadata for `/mcp`, supports dynamic registration, and requires authorization-code flow with S256 PKCE and a private owner passphrase. Access and refresh tokens are opaque; refresh tokens rotate. The server must never be changed to accept unauthenticated `/mcp` traffic merely to make a client connect.
 
-If your ChatGPT custom-app setup requires OAuth rather than a static bearer credential, **do not disable authentication**. Add or place a standards-compliant OAuth/OIDC layer in front of `/mcp` instead. OpenAI recommends refresh-token support when OAuth is used so connectivity can be maintained after access-token expiry.
-
-The server must never be changed to accept unauthenticated `/mcp` traffic merely to make a client connect.
+OAuth endpoints are `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/register`, `/authorize`, and `/token` at the service origin.
 
 ## Credential rotation
 
-### Rotate the MCP bearer token
+### Rotate OAuth login material
 
-1. Generate a new random token.
-2. Update the hosting secret.
-3. Restart/redeploy the service.
-4. Update the authorized MCP client/app.
-5. Invalidate the old token by ensuring it is no longer present anywhere in deployment configuration.
+1. Generate a new `MCP_LOGIN_PASSPHRASE_SCRYPT` with `npm run hash-passphrase`.
+2. Generate a new `OAUTH_COOKIE_KEY`.
+3. Update both values in Render's secret controls and redeploy.
+4. Restart or replace Key Value if all outstanding OAuth state must be revoked.
+5. Reauthorize the MCP client/app.
 
 ### Rotate Yahoo access
 
@@ -266,7 +279,7 @@ If the server, deployment account or Yahoo app password may have been compromise
 
 1. Disable or scale down the MCP service immediately.
 2. Revoke the Yahoo app-specific password.
-3. Rotate `MCP_API_TOKEN`.
+3. Rotate `MCP_LOGIN_PASSPHRASE_SCRYPT` and `OAUTH_COOKIE_KEY`.
 4. Review hosting access/audit logs without copying message bodies into tickets or chat.
 5. Review Git history for accidentally committed secrets.
 6. Re-deploy from a known-good reviewed commit.
@@ -292,8 +305,8 @@ src/
   index.ts             HTTPS-facing MCP application entry point
   mcp.ts               read-only MCP tool definitions
   yahoo.ts             Yahoo IMAP reader
+  oauth/                OAuth discovery, registration, authorization and tokens
   security/
-    auth.ts             bearer authentication
     redact.ts           deterministic secret/content sanitization
 tests/
   redact.test.ts

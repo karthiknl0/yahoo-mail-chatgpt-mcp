@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: yahoo-mail-chatgpt-mcp
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: yahoo-mail-oauth-state
+          property: connectionString
+      - key: YAHOO_EMAIL
+        sync: false
+      - key: YAHOO_APP_PASSWORD
+        sync: false
+      - key: MCP_LOGIN_PASSPHRASE_SCRYPT
+        sync: false
+      - key: OAUTH_COOKIE_KEY
+        sync: false
+      - key: ALLOWED_HOSTS
+        sync: false
+
+  - type: keyvalue
+    name: yahoo-mail-oauth-state
+    region: oregon
+    plan: free
+    maxmemoryPolicy: noeviction
+    ipAllowList: []

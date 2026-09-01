@@ -15,6 +15,8 @@
     "lint": "eslint .",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
+    "prehash-passphrase": "npm run build --silent",
+    "hash-passphrase": "node scripts/hash-passphrase.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

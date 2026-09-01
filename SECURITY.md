@@ -32,7 +32,9 @@ Never commit `.env` files or real values for:
 
 - `YAHOO_EMAIL`
 - `YAHOO_APP_PASSWORD`
-- `MCP_API_TOKEN`
+- `MCP_LOGIN_PASSPHRASE_SCRYPT`
+- `OAUTH_COOKIE_KEY`
+- `REDIS_URL`
 
 Use hosting-platform secret storage for production values. If a secret is ever committed, assume it is compromised even if the commit is later rewritten; rotate it immediately.
 
@@ -46,10 +48,10 @@ Before deployment:
 4. Confirm the public hostname exactly matches `ALLOWED_HOSTS`.
 5. Confirm request/body logging is disabled at proxies.
 6. Confirm no real secrets exist anywhere in Git history.
-7. Test unauthorized `/mcp` access returns `401`.
+7. Test unauthorized `/mcp` access returns `401` with protected-resource metadata.
 8. Test `/health` returns only `{ "status": "ok" }`.
 9. Validate OTP/reset-link redaction with synthetic test messages.
 
 ## Incident response
 
-If compromise is suspected, disable the service, revoke the Yahoo app-specific password, rotate the MCP bearer token, review access logs, revalidate the code and deploy from a known-good commit.
+If compromise is suspected, disable the service, revoke the Yahoo app-specific password, rotate the login passphrase digest and OAuth cookie key, review access logs, revalidate the code and deploy from a known-good commit. Revoking OAuth state by restarting or replacing Key Value requires every client to authorize again.
