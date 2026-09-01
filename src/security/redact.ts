@@ -11,6 +11,8 @@ const longDigitPattern = /\b(?:\d[ -]?){12,19}\b/g;
 const contextualCodePattern = /\b\d(?:[\s.-]?\d){3,7}\b/g;
 const bearerLikePattern =
   /\b(?:bearer\s+)?[A-Za-z0-9_-]{24,}\.[A-Za-z0-9._-]{8,}\b/gi;
+const bearerCredentialPattern =
+  /\b(?:authorization\s*:\s*)?bearer\s+[A-Za-z0-9_-]{16,}\b/gi;
 const contextualCredentialPattern =
   /\b((?:(?:api|access|refresh|auth(?:entication)?|bearer|session)\s*)?(?:token|key)|client\s*secret|secret)\s*(?::|=|is\b)?\s*([A-Za-z0-9_-]{16,})\b/gi;
 const controlCharacterPattern = /[\p{Cc}\p{Cf}]/gu;
@@ -68,6 +70,7 @@ export function sanitizeEmailText(input: string): string {
   let text = stripHtml(input).replace(controlCharacterPattern, " ");
   text = redactSensitiveUrls(text);
   text = text.replace(bearerLikePattern, REDACTED);
+  text = text.replace(bearerCredentialPattern, REDACTED);
   text = text.replace(contextualCredentialPattern, "$1: [REDACTED]");
   text = text.replace(longDigitPattern, REDACTED);
   text = redactContextualCodes(text);
