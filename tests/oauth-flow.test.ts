@@ -1,14 +1,12 @@
 import { scryptSync } from "node:crypto";
-import {
-  LATEST_PROTOCOL_VERSION,
-  McpServer,
-} from "@modelcontextprotocol/server";
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/server";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod/v4";
 import { createApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
+import { createYahooMcpServer, type MailReader } from "../src/mcp.js";
 import { pkceChallenge } from "../src/oauth/crypto.js";
+import { YahooMailReader } from "../src/yahoo.js";
 import { InMemoryOAuthStore } from "./helpers/in-memory-oauth-store.js";
 
 const origin = "https://yahoo-mail-mcp.onrender.com";
@@ -45,24 +43,18 @@ const passphraseDigest = `scrypt$16384$8$1$${salt.toString("base64url")}$${scryp
   },
 ).toString("base64url")}`;
 
-function createToolServer(): McpServer {
-  const server = new McpServer({
-    name: "yahoo-mail-chatgpt-mcp-test",
-    version: "0.1.0",
-  });
-  for (const name of toolNames) {
-    server.registerTool(
-      name,
-      {
-        description: "Read-only test tool; it never opens a mailbox.",
-        inputSchema: z.object({}),
-      },
-      async () => ({
-        content: [{ type: "text", text: JSON.stringify({ ok: true }) }],
-      }),
-    );
-  }
-  return server;
+function createMailboxFreeReader(): MailReader {
+  return {
+    async listEmails() {
+      return [];
+    },
+    async readEmail() {
+      return null;
+    },
+    async listFolders() {
+      return [];
+    },
+  };
 }
 
 function createTestApp(store = new InMemoryOAuthStore()) {
@@ -76,10 +68,14 @@ function createTestApp(store = new InMemoryOAuthStore()) {
     HOST: "127.0.0.1",
     ALLOWED_HOSTS: "localhost,127.0.0.1",
   });
+  vi.spyOn(YahooMailReader.prototype, "listFolders").mockResolvedValue([
+    "live-reader-was-used",
+  ]);
   return {
     app: createApp(config, {
       oauthStore: store,
-      createMcpServer: createToolServer,
+      createMcpServer: (appConfig) =>
+        createYahooMcpServer(appConfig, createMailboxFreeReader()),
     }),
     store,
   };
@@ -109,7 +105,17 @@ interface McpMessage {
   readonly result?: {
     readonly protocolVersion?: string;
     readonly serverInfo?: { readonly name?: string; readonly version?: string };
-    readonly tools?: readonly { readonly name: string }[];
+    readonly tools?: readonly {
+      readonly name: string;
+      readonly annotations?: {
+        readonly readOnlyHint?: boolean;
+        readonly destructiveHint?: boolean;
+      };
+    }[];
+    readonly content?: readonly {
+      readonly type: string;
+      readonly text?: string;
+    }[];
   };
 }
 
@@ -206,7 +212,7 @@ describe("complete in-memory OAuth protocol flow", () => {
     expect(initialized.status).toBe(200);
     expect(mcpMessage(initialized).result).toMatchObject({
       protocolVersion: LATEST_PROTOCOL_VERSION,
-      serverInfo: { name: "yahoo-mail-chatgpt-mcp-test", version: "0.1.0" },
+      serverInfo: { name: "yahoo-mail-chatgpt-mcp", version: "0.1.0" },
     });
 
     const tools = await mcpRequest(app, accessToken, 2, "tools/list", {});
@@ -215,10 +221,28 @@ describe("complete in-memory OAuth protocol flow", () => {
     expect(toolsMessage.result?.tools?.map((tool) => tool.name)).toEqual(
       toolNames,
     );
+    expect(toolsMessage.result?.tools).toEqual(
+      toolNames.map((name) =>
+        expect.objectContaining({
+          name,
+          annotations: expect.objectContaining({
+            readOnlyHint: true,
+            destructiveHint: false,
+          }),
+        }),
+      ),
+    );
     expect(JSON.stringify(toolsMessage)).not.toContain(yahooEmail);
     for (const value of Object.values(mailboxValues)) {
       expect(JSON.stringify(toolsMessage)).not.toContain(value);
     }
+
+    const folders = await mcpRequest(app, accessToken, 3, "tools/call", {
+      name: "list_folders",
+      arguments: {},
+    });
+    expect(folders.status).toBe(200);
+    expect(mcpMessage(folders).result?.content?.[0]?.text).toBe("[]");
 
     const rotation = await request(app).post("/token").type("form").send({
       grant_type: "refresh_token",
@@ -235,13 +259,13 @@ describe("complete in-memory OAuth protocol flow", () => {
     const rotatedTools = await mcpRequest(
       app,
       rotatedAccessToken,
-      3,
+      4,
       "tools/list",
       {},
     );
     expect(rotatedTools.status).toBe(200);
 
-    const oldAccess = await mcpRequest(app, accessToken, 4, "tools/list", {});
+    const oldAccess = await mcpRequest(app, accessToken, 5, "tools/list", {});
     expect(oldAccess.status).toBe(401);
     expect(oldAccess.body).toEqual({ error: "unauthorized" });
 
@@ -287,7 +311,7 @@ describe("complete in-memory OAuth protocol flow", () => {
     const failedFlow = await mcpRequest(
       createTestApp(new FailingAccessStore()).app,
       failedAccessToken,
-      5,
+      6,
       "tools/list",
       {},
     );
