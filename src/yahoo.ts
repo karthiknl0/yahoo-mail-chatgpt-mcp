@@ -169,6 +169,7 @@ async function parseMail(
     let text: string | undefined;
     let html: string | undefined;
     let hasAttachments = false;
+    let oversizedHtml = false;
 
     const cleanup = () => {
       signal.removeEventListener("abort", onAbort);
@@ -197,11 +198,13 @@ async function parseMail(
         finish(error);
         return;
       }
-      if (!text?.trim()) text = OVERSIZED_HTML_FALLBACK;
+      oversizedHtml = true;
       html = undefined;
+    };
+    const onEnd = () => {
+      if (oversizedHtml && !text?.trim()) text = OVERSIZED_HTML_FALLBACK;
       finish();
     };
-    const onEnd = () => finish();
 
     parser.on(
       "data",
@@ -215,7 +218,7 @@ async function parseMail(
         if (data.type === "text") {
           text = data.text?.slice(0, MAX_PARSED_MAIL_BODY_CHARS);
           html =
-            typeof data.html === "string"
+            !oversizedHtml && typeof data.html === "string"
               ? data.html.slice(0, MAX_PARSED_MAIL_BODY_CHARS)
               : undefined;
         } else if (data.type === "attachment") {
