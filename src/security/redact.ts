@@ -12,7 +12,7 @@ const contextualCodePattern = /\b\d(?:[\s.-]?\d){3,7}\b/g;
 const strictDottedCredentialPattern =
   /\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9._-]{8,}\b/g;
 const strictOpaqueBase64UrlCredentialPattern =
-  /(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]{0,42}[A-Z])(?=[A-Za-z0-9_-]{0,42}[a-z])(?=[A-Za-z0-9_-]{0,42}\d)[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
+  /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
 const bearerCredentialPattern =
   /\b(?:authorization\s*:\s*)?bearer\s+[A-Za-z0-9_+~/-]{16,}(?:={1,2})?(?:\.[A-Za-z0-9_+~/-]+(?:={1,2})?)*(?![A-Za-z0-9_+~/-=])/gi;
 const contextualCredentialPattern =

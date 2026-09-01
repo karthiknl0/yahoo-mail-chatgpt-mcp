@@ -87,20 +87,28 @@ describe("email redaction", () => {
   });
 
   it("redacts strict opaque base64url credentials wherever they appear", () => {
-    const credential = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-aBcDe";
-    const output = sanitizeEmailText(
-      `Credential ${credential}; link https://example.com/share/${credential}?state=${credential}`,
-    );
+    const credentials = [
+      "Ab".repeat(21) + "_", // no digits
+      "A".repeat(43), // uppercase-only canonical base64url
+      "a".repeat(43), // lowercase-only canonical base64url
+    ];
 
-    expect(credential).toHaveLength(43);
-    expect(output).not.toContain(credential);
-    expect(output).toContain("[REDACTED]");
+    for (const credential of credentials) {
+      const output = sanitizeEmailText(
+        `Credential ${credential}; link https://example.com/share/${credential}?state=${credential}`,
+      );
+
+      expect(credential).toHaveLength(43);
+      expect(output).not.toContain(credential);
+      expect(output).toContain("[REDACTED]");
+    }
+
     expect(sanitizeEmailText("Release ID: release-2026")).toContain(
       "release-2026",
     );
-    const plainIdentifier = "a".repeat(43);
-    expect(sanitizeEmailText(`Label: ${plainIdentifier}`)).toContain(
-      plainIdentifier,
+    const longerIdentifier = "a".repeat(44);
+    expect(sanitizeEmailText(`Label: ${longerIdentifier}`)).toContain(
+      longerIdentifier,
     );
   });
 
