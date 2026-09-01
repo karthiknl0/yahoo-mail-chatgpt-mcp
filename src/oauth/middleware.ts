@@ -39,7 +39,8 @@ export function requireMcpBearer(
       if (
         !record ||
         record.expiresAt <= Date.now() ||
-        record.resource !== config.resourceUrl
+        record.resource !== config.resourceUrl ||
+        record.scope !== "mcp:read"
       ) {
         deny();
         return;

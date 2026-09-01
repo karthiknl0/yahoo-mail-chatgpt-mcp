@@ -3,6 +3,8 @@ import type {
   AccessTokenRecord,
   AuthorizationCodeRecord,
   AuthorizationTransaction,
+  ExchangeAuthorizationCodeInput,
+  ExchangeAuthorizationCodeResult,
   RefreshTokenRecord,
   RegisteredClient,
   RotateRefreshTokenInput,
@@ -43,6 +45,7 @@ export class InMemoryOAuthStore implements OAuthStore {
     Map<string, number>
   >();
   private currentTime: number;
+  private failNextPairWrite = false;
 
   constructor(now = Date.now()) {
     this.currentTime = now;
@@ -50,6 +53,10 @@ export class InMemoryOAuthStore implements OAuthStore {
 
   advanceBy(milliseconds: number): void {
     this.currentTime += milliseconds;
+  }
+
+  failNextTokenPairWrite(): void {
+    this.failNextPairWrite = true;
   }
 
   async seedRefreshToken(
@@ -96,6 +103,55 @@ export class InMemoryOAuthStore implements OAuthStore {
     return this.consume(this.authorizationCodes, digest);
   }
 
+  async exchangeAuthorizationCode(
+    input: ExchangeAuthorizationCodeInput,
+  ): Promise<ExchangeAuthorizationCodeResult> {
+    const record = this.read(this.authorizationCodes, input.codeDigest);
+    if (!record) return { status: "missing" };
+    if (
+      this.read(this.accessTokens, input.accessDigest) ||
+      this.read(this.refreshTokens, input.refreshDigest)
+    ) {
+      return { status: "collision" };
+    }
+
+    const bindingMismatch =
+      record.clientId !== input.clientId ||
+      record.redirectUri !== input.redirectUri ||
+      record.resource !== input.resource ||
+      record.codeChallenge !== input.codeChallenge ||
+      record.scope !== input.scope;
+    if (bindingMismatch) {
+      this.authorizationCodes.delete(input.codeDigest);
+      return { status: "binding_mismatch" };
+    }
+
+    if (this.consumePairWriteFailure()) return { status: "storage_error" };
+    this.authorizationCodes.delete(input.codeDigest);
+    const accessRecord: AccessTokenRecord = {
+      clientId: record.clientId,
+      resource: record.resource,
+      scope: record.scope,
+      expiresAt: this.currentTime + input.accessTtlSeconds * 1_000,
+    };
+    const refreshRecord: RefreshTokenRecord = {
+      familyId: input.familyId,
+      clientId: record.clientId,
+      resource: record.resource,
+      scope: record.scope,
+      expiresAt: this.currentTime + input.refreshTtlSeconds * 1_000,
+    };
+    this.accessTokens.set(input.accessDigest, {
+      value: accessRecord,
+      expiresAt: accessRecord.expiresAt,
+    });
+    this.refreshTokens.set(input.refreshDigest, {
+      value: refreshRecord,
+      expiresAt: refreshRecord.expiresAt,
+    });
+    return { status: "issued", record };
+  }
+
   async createAccessToken(
     digest: string,
     value: AccessTokenRecord,
@@ -133,6 +189,9 @@ export class InMemoryOAuthStore implements OAuthStore {
     if (!oldRecord) {
       const usedRecord = this.read(this.usedRefreshTokens, input.oldDigest);
       if (!usedRecord) return { status: "missing" };
+      if (!this.matchesRefreshBindings(usedRecord, input)) {
+        return { status: "binding_mismatch" };
+      }
       if (this.isFamilyRevoked(usedRecord.familyId)) {
         return { status: "revoked", record: usedRecord };
       }
@@ -140,13 +199,27 @@ export class InMemoryOAuthStore implements OAuthStore {
       return { status: "replayed", record: usedRecord };
     }
 
+    if (!this.matchesRefreshBindings(oldRecord, input)) {
+      return { status: "binding_mismatch" };
+    }
     if (this.isFamilyRevoked(oldRecord.familyId)) {
       return { status: "revoked", record: oldRecord };
     }
-    if (this.read(this.refreshTokens, input.newDigest)) {
-      return { status: "missing" };
+    if (
+      this.read(this.usedRefreshTokens, input.oldDigest) ||
+      this.read(this.refreshTokens, input.newDigest) ||
+      this.read(this.accessTokens, input.accessDigest)
+    ) {
+      return { status: "collision" };
     }
 
+    if (this.consumePairWriteFailure()) return { status: "storage_error" };
+    const accessRecord: AccessTokenRecord = {
+      clientId: oldRecord.clientId,
+      resource: oldRecord.resource,
+      scope: oldRecord.scope,
+      expiresAt: this.currentTime + input.accessTtlSeconds * 1_000,
+    };
     this.refreshTokens.delete(input.oldDigest);
     this.usedRefreshTokens.set(input.oldDigest, {
       value: structuredClone(oldRecord),
@@ -155,6 +228,10 @@ export class InMemoryOAuthStore implements OAuthStore {
     this.refreshTokens.set(input.newDigest, {
       value: structuredClone(oldRecord),
       expiresAt: oldRecord.expiresAt,
+    });
+    this.accessTokens.set(input.accessDigest, {
+      value: accessRecord,
+      expiresAt: accessRecord.expiresAt,
     });
     return { status: "rotated", record: oldRecord };
   }
@@ -265,6 +342,23 @@ export class InMemoryOAuthStore implements OAuthStore {
       this.revokedFamilies.delete(familyId);
       return false;
     }
+    return true;
+  }
+
+  private matchesRefreshBindings(
+    record: RefreshTokenRecord,
+    input: RotateRefreshTokenInput,
+  ): boolean {
+    return (
+      record.clientId === input.clientId &&
+      record.resource === input.resource &&
+      record.scope === input.scope
+    );
+  }
+
+  private consumePairWriteFailure(): boolean {
+    if (!this.failNextPairWrite) return false;
+    this.failNextPairWrite = false;
     return true;
   }
 

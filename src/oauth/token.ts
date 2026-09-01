@@ -1,8 +1,7 @@
 import { Router, type Request, type Response, urlencoded } from "express";
 import type { AppConfig } from "../config.js";
-import { randomToken, sha256Token, verifyPkce } from "./crypto.js";
+import { pkceChallenge, randomToken, sha256Token } from "./crypto.js";
 import type { OAuthStore } from "./store.js";
-import type { AccessTokenRecord, RefreshTokenRecord } from "./types.js";
 
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -41,22 +40,6 @@ function sendTokens(
   });
 }
 
-async function storeAccessToken(
-  store: OAuthStore,
-  record: Omit<AccessTokenRecord, "expiresAt">,
-): Promise<string> {
-  const accessToken = randomToken();
-  await store.createAccessToken(
-    sha256Token(accessToken),
-    {
-      ...record,
-      expiresAt: Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1_000,
-    },
-    ACCESS_TOKEN_TTL_SECONDS,
-  );
-  return accessToken;
-}
-
 async function exchangeAuthorizationCode(
   req: Request,
   res: Response,
@@ -69,51 +52,43 @@ async function exchangeAuthorizationCode(
     return;
   }
 
-  const record = await store.consumeAuthorizationCode(sha256Token(code));
   const clientId = formValue(req, "client_id");
   const redirectUri = formValue(req, "redirect_uri");
   const resource = formValue(req, "resource");
   const verifier = formValue(req, "code_verifier");
-  const validPkce =
-    record !== null &&
-    verifier !== null &&
-    PKCE_VERIFIER_PATTERN.test(verifier) &&
-    (await verifyPkce(verifier, record.codeChallenge));
+  const codeChallenge =
+    verifier !== null && PKCE_VERIFIER_PATTERN.test(verifier)
+      ? await pkceChallenge(verifier)
+      : "";
 
-  if (
-    !OPAQUE_TOKEN_PATTERN.test(code) ||
-    record === null ||
-    clientId !== record.clientId ||
-    redirectUri !== record.redirectUri ||
-    resource !== record.resource ||
-    resource !== config.resourceUrl ||
-    !validPkce
-  ) {
-    sendTokenError(res, "invalid_grant");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const accessToken = randomToken();
+    const refreshToken = randomToken();
+    const exchange = await store.exchangeAuthorizationCode({
+      codeDigest: sha256Token(code),
+      accessDigest: sha256Token(accessToken),
+      refreshDigest: sha256Token(refreshToken),
+      familyId: randomToken(),
+      clientId: clientId ?? "",
+      redirectUri: redirectUri ?? "",
+      resource: resource === config.resourceUrl ? resource : "",
+      codeChallenge,
+      scope: OPAQUE_TOKEN_PATTERN.test(code) ? "mcp:read" : "",
+      accessTtlSeconds: ACCESS_TOKEN_TTL_SECONDS,
+      refreshTtlSeconds: REFRESH_TOKEN_TTL_SECONDS,
+    });
+    if (exchange.status === "collision") continue;
+    if (exchange.status === "storage_error") {
+      throw new Error("OAuth token-pair persistence failed");
+    }
+    if (exchange.status !== "issued") {
+      sendTokenError(res, "invalid_grant");
+      return;
+    }
+    sendTokens(res, accessToken, refreshToken, exchange.record.scope);
     return;
   }
-
-  const refreshToken = randomToken();
-  const refreshRecord: RefreshTokenRecord = {
-    familyId: randomToken(),
-    clientId: record.clientId,
-    resource: record.resource,
-    scope: record.scope,
-    expiresAt: Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1_000,
-  };
-  const created = await store.createRefreshToken(
-    sha256Token(refreshToken),
-    refreshRecord,
-    REFRESH_TOKEN_TTL_SECONDS,
-  );
-  if (!created) throw new Error("Unable to allocate OAuth refresh token");
-
-  const accessToken = await storeAccessToken(store, {
-    clientId: record.clientId,
-    resource: record.resource,
-    scope: record.scope,
-  });
-  sendTokens(res, accessToken, refreshToken, record.scope);
+  throw new Error("Unable to allocate OAuth token pair");
 }
 
 async function exchangeRefreshToken(
@@ -128,37 +103,36 @@ async function exchangeRefreshToken(
     return;
   }
 
-  const newToken = randomToken();
-  const rotation = await store.rotateRefreshToken({
-    oldDigest: sha256Token(oldToken),
-    newDigest: sha256Token(newToken),
-  });
-  if (rotation.status !== "rotated") {
-    sendTokenError(res, "invalid_grant");
-    return;
-  }
-
   const clientId = formValue(req, "client_id");
   const resource = formValue(req, "resource");
   const requestedScope = formValue(req, "scope");
-  const record = rotation.record;
-  if (
-    clientId !== record.clientId ||
-    resource !== record.resource ||
-    resource !== config.resourceUrl ||
-    (requestedScope !== null && requestedScope !== record.scope) ||
-    record.expiresAt <= Date.now()
-  ) {
-    sendTokenError(res, "invalid_grant");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const newToken = randomToken();
+    const accessToken = randomToken();
+    const rotation = await store.rotateRefreshToken({
+      oldDigest: sha256Token(oldToken),
+      newDigest: sha256Token(newToken),
+      accessDigest: sha256Token(accessToken),
+      clientId: clientId ?? "",
+      resource: resource === config.resourceUrl ? resource : "",
+      scope:
+        requestedScope === null || requestedScope === "mcp:read"
+          ? "mcp:read"
+          : "",
+      accessTtlSeconds: ACCESS_TOKEN_TTL_SECONDS,
+    });
+    if (rotation.status === "collision") continue;
+    if (rotation.status === "storage_error") {
+      throw new Error("OAuth token-pair persistence failed");
+    }
+    if (rotation.status !== "rotated") {
+      sendTokenError(res, "invalid_grant");
+      return;
+    }
+    sendTokens(res, accessToken, newToken, rotation.record.scope);
     return;
   }
-
-  const accessToken = await storeAccessToken(store, {
-    clientId: record.clientId,
-    resource: record.resource,
-    scope: record.scope,
-  });
-  sendTokens(res, accessToken, newToken, record.scope);
+  throw new Error("Unable to allocate OAuth token pair");
 }
 
 export function tokenRouter(config: AppConfig, store: OAuthStore): Router {

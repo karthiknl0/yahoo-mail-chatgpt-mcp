@@ -2,6 +2,8 @@ import type {
   AccessTokenRecord,
   AuthorizationCodeRecord,
   AuthorizationTransaction,
+  ExchangeAuthorizationCodeInput,
+  ExchangeAuthorizationCodeResult,
   RefreshTokenRecord,
   RegisteredClient,
   RotateRefreshTokenInput,
@@ -25,6 +27,9 @@ export interface OAuthStore {
   consumeAuthorizationCode(
     digest: string,
   ): Promise<AuthorizationCodeRecord | null>;
+  exchangeAuthorizationCode(
+    input: ExchangeAuthorizationCodeInput,
+  ): Promise<ExchangeAuthorizationCodeResult>;
   createAccessToken(
     digest: string,
     value: AccessTokenRecord,

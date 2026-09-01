@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { RedisOAuthStore } from "../src/oauth/redis-store.js";
 import type {
   AccessTokenRecord,
+  ExchangeAuthorizationCodeInput,
   AuthorizationCodeRecord,
   AuthorizationTransaction,
   RefreshTokenRecord,
@@ -46,9 +47,27 @@ const refreshToken: RefreshTokenRecord = {
 const rotation: RotateRefreshTokenInput = {
   oldDigest: "old-digest",
   newDigest: "new-digest",
+  accessDigest: "rotated-access-digest",
+  clientId: refreshToken.clientId,
+  resource: refreshToken.resource,
+  scope: refreshToken.scope,
+  accessTtlSeconds: 900,
 };
 
 const refreshTtlSeconds = 30 * 24 * 60 * 60;
+const codeExchange: ExchangeAuthorizationCodeInput = {
+  codeDigest: "code-exchange-digest",
+  accessDigest: "code-access-digest",
+  refreshDigest: "code-refresh-digest",
+  familyId: "code-family-id",
+  clientId: authorizationCode.clientId,
+  redirectUri: authorizationCode.redirectUri,
+  resource: authorizationCode.resource,
+  codeChallenge: authorizationCode.codeChallenge,
+  scope: authorizationCode.scope,
+  accessTtlSeconds: 900,
+  refreshTtlSeconds,
+};
 
 describe("OAuth store contract", () => {
   it("consumes an authorization transaction exactly once", async () => {
@@ -77,6 +96,133 @@ describe("OAuth store contract", () => {
     expect(await store.getAccessToken("access-1")).toEqual(accessToken);
     store.advanceBy(1);
     expect(await store.getAccessToken("access-1")).toBeNull();
+  });
+
+  it("atomically exchanges a bound code for an access and refresh pair", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createAuthorizationCode(
+      codeExchange.codeDigest,
+      authorizationCode,
+      300,
+    );
+
+    expect(await store.exchangeAuthorizationCode(codeExchange)).toEqual({
+      status: "issued",
+      record: authorizationCode,
+    });
+    expect(await store.getAccessToken(codeExchange.accessDigest)).toEqual({
+      clientId: authorizationCode.clientId,
+      resource: authorizationCode.resource,
+      scope: authorizationCode.scope,
+      expiresAt: 1_700_000_900_000,
+    });
+    expect(
+      await store.rotateRefreshToken({
+        ...rotation,
+        oldDigest: codeExchange.refreshDigest,
+        clientId: authorizationCode.clientId,
+        resource: authorizationCode.resource,
+        scope: authorizationCode.scope,
+      }),
+    ).toMatchObject({ status: "rotated" });
+  });
+
+  it("consumes a code on binding mismatch without writing either token", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createAuthorizationCode(
+      codeExchange.codeDigest,
+      authorizationCode,
+      300,
+    );
+
+    expect(
+      await store.exchangeAuthorizationCode({
+        ...codeExchange,
+        clientId: "wrong-client",
+      }),
+    ).toEqual({ status: "binding_mismatch" });
+    expect(await store.exchangeAuthorizationCode(codeExchange)).toEqual({
+      status: "missing",
+    });
+    expect(await store.getAccessToken(codeExchange.accessDigest)).toBeNull();
+  });
+
+  it("keeps a valid code reusable when either successor digest collides", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createAuthorizationCode(
+      codeExchange.codeDigest,
+      authorizationCode,
+      300,
+    );
+    await store.createAccessToken(codeExchange.accessDigest, accessToken, 900);
+
+    expect(await store.exchangeAuthorizationCode(codeExchange)).toEqual({
+      status: "collision",
+    });
+    expect(
+      await store.exchangeAuthorizationCode({
+        ...codeExchange,
+        accessDigest: "retry-code-access-digest",
+        refreshDigest: "retry-code-refresh-digest",
+      }),
+    ).toMatchObject({ status: "issued" });
+  });
+
+  it("allows only one concurrent exchange of the same code", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createAuthorizationCode(
+      codeExchange.codeDigest,
+      authorizationCode,
+      300,
+    );
+
+    const results = await Promise.all([
+      store.exchangeAuthorizationCode(codeExchange),
+      store.exchangeAuthorizationCode({
+        ...codeExchange,
+        accessDigest: "concurrent-code-access",
+        refreshDigest: "concurrent-code-refresh",
+      }),
+    ]);
+
+    expect(results.map((result) => result.status).sort()).toEqual([
+      "issued",
+      "missing",
+    ]);
+    expect(
+      await store.getAccessToken(codeExchange.accessDigest),
+    ).not.toBeNull();
+    expect(await store.getAccessToken("concurrent-code-access")).toBeNull();
+  });
+
+  it("preserves authorization and refresh credentials when an atomic write fails", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createAuthorizationCode(
+      codeExchange.codeDigest,
+      authorizationCode,
+      300,
+    );
+    await store.createRefreshToken(
+      rotation.oldDigest,
+      refreshToken,
+      refreshTtlSeconds,
+    );
+
+    store.failNextTokenPairWrite();
+    expect(await store.exchangeAuthorizationCode(codeExchange)).toEqual({
+      status: "storage_error",
+    });
+    expect(await store.exchangeAuthorizationCode(codeExchange)).toMatchObject({
+      status: "issued",
+    });
+
+    store.failNextTokenPairWrite();
+    expect(await store.rotateRefreshToken(rotation)).toEqual({
+      status: "storage_error",
+    });
+    expect(await store.rotateRefreshToken(rotation)).toMatchObject({
+      status: "rotated",
+    });
   });
 
   it("increments a shared rate-limit counter atomically", async () => {
@@ -182,31 +328,110 @@ describe("OAuth store contract", () => {
     });
     expect(
       await store.rotateRefreshToken({
+        ...rotation,
         oldDigest: rotation.newDigest,
         newDigest: "third-digest",
+        accessDigest: "third-access-digest",
       }),
     ).toEqual({ status: "revoked", record: refreshToken });
   });
 
-  it("derives refresh metadata from storage when caller metadata mismatches", async () => {
+  it("rejects mismatched refresh bindings without consuming the token", async () => {
     const store = new InMemoryOAuthStore(1_700_000_000_000);
     await store.createRefreshToken(
       rotation.oldDigest,
       refreshToken,
       refreshTtlSeconds,
     );
-    const mismatchedCallerInput = {
+    const mismatchedCallerInput: RotateRefreshTokenInput = {
       ...rotation,
-      familyId: "wrong-family",
       clientId: "wrong-client",
       resource: "https://wrong.example/mcp",
       scope: "wrong:scope",
     };
 
     expect(await store.rotateRefreshToken(mismatchedCallerInput)).toEqual({
+      status: "binding_mismatch",
+    });
+    expect(await store.rotateRefreshToken(rotation)).toEqual({
       status: "rotated",
       record: refreshToken,
     });
+  });
+
+  it("persists the rotated access and refresh pair atomically", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createRefreshToken(
+      rotation.oldDigest,
+      refreshToken,
+      refreshTtlSeconds,
+    );
+
+    expect(await store.rotateRefreshToken(rotation)).toEqual({
+      status: "rotated",
+      record: refreshToken,
+    });
+    expect(await store.getAccessToken(rotation.accessDigest)).toEqual({
+      clientId: refreshToken.clientId,
+      resource: refreshToken.resource,
+      scope: refreshToken.scope,
+      expiresAt: 1_700_000_900_000,
+    });
+  });
+
+  it("leaves the old refresh usable when either successor digest collides", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createRefreshToken(
+      rotation.oldDigest,
+      refreshToken,
+      refreshTtlSeconds,
+    );
+    await store.createAccessToken(rotation.accessDigest, accessToken, 900);
+
+    expect(await store.rotateRefreshToken(rotation)).toEqual({
+      status: "collision",
+    });
+    expect(
+      await store.rotateRefreshToken({
+        ...rotation,
+        newDigest: "retry-refresh-digest",
+        accessDigest: "retry-access-digest",
+      }),
+    ).toEqual({ status: "rotated", record: refreshToken });
+  });
+
+  it("allows only one concurrent refresh rotation and revokes its family on replay", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.createRefreshToken(
+      rotation.oldDigest,
+      refreshToken,
+      refreshTtlSeconds,
+    );
+
+    const results = await Promise.all([
+      store.rotateRefreshToken(rotation),
+      store.rotateRefreshToken({
+        ...rotation,
+        newDigest: "concurrent-refresh-digest",
+        accessDigest: "concurrent-access-digest",
+      }),
+    ]);
+
+    expect(results.map((result) => result.status).sort()).toEqual([
+      "replayed",
+      "rotated",
+    ]);
+    expect(await store.getAccessToken(rotation.accessDigest)).toEqual(
+      accessToken,
+    );
+    expect(
+      await store.rotateRefreshToken({
+        ...rotation,
+        oldDigest: rotation.newDigest,
+        newDigest: "after-replay-refresh-digest",
+        accessDigest: "after-replay-access-digest",
+      }),
+    ).toMatchObject({ status: "revoked" });
   });
 
   it("rejects a replacement digest already owned by a different family", async () => {
@@ -224,18 +449,25 @@ describe("OAuth store contract", () => {
     );
 
     expect(await store.rotateRefreshToken(rotation)).toEqual({
-      status: "missing",
+      status: "collision",
     });
     expect(
       await store.rotateRefreshToken({
+        ...rotation,
         oldDigest: rotation.oldDigest,
         newDigest: "family-1-replacement",
+        accessDigest: "family-1-access",
       }),
     ).toEqual({ status: "rotated", record: refreshToken });
     expect(
       await store.rotateRefreshToken({
+        ...rotation,
         oldDigest: rotation.newDigest,
         newDigest: "family-2-replacement",
+        accessDigest: "family-2-access",
+        clientId: otherFamily.clientId,
+        resource: otherFamily.resource,
+        scope: otherFamily.scope,
       }),
     ).toEqual({ status: "rotated", record: otherFamily });
   });
@@ -256,8 +488,10 @@ describe("OAuth store contract", () => {
     store.advanceBy(24 * 60 * 60 * 1_000);
     expect(
       await store.rotateRefreshToken({
+        ...rotation,
         oldDigest: rotation.newDigest,
         newDigest: "third-digest",
+        accessDigest: "third-access-digest",
       }),
     ).toEqual({ status: "missing" });
   });
@@ -380,8 +614,49 @@ describe("RedisOAuthStore command boundaries", () => {
           "refresh:old-digest",
           "refresh-used:old-digest",
           "refresh:new-digest",
+          "access:rotated-access-digest",
         ],
-        arguments: ["family-revoked:"],
+        arguments: [
+          "family-revoked:",
+          "client-1",
+          "https://service.example/mcp",
+          "mcp:read",
+          "900",
+        ],
+      },
+    ]);
+  });
+
+  it("exchanges an authorization code and token pair in one Lua command", async () => {
+    const fake = new StrictFakeRedisClient();
+    fake.evalReply = JSON.stringify({
+      status: "issued",
+      record: authorizationCode,
+    });
+    const store = redisStore(fake);
+
+    expect(await store.exchangeAuthorizationCode(codeExchange)).toEqual({
+      status: "issued",
+      record: authorizationCode,
+    });
+    expect(fake.calls).toEqual([
+      {
+        method: "eval",
+        keys: [
+          "code:code-exchange-digest",
+          "access:code-access-digest",
+          "refresh:code-refresh-digest",
+        ],
+        arguments: [
+          "client-1",
+          "https://client.example/callback",
+          "https://service.example/mcp",
+          "challenge-1",
+          "mcp:read",
+          "code-family-id",
+          "900",
+          String(refreshTtlSeconds),
+        ],
       },
     ]);
   });

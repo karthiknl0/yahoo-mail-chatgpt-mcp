@@ -272,5 +272,13 @@ describe("OAuth refresh-token exchange", () => {
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({ error: "invalid_grant" });
+
+    const retry = await request(app).post("/token").type("form").send({
+      grant_type: "refresh_token",
+      refresh_token: initial.body.refresh_token,
+      client_id: clientId,
+      resource,
+    });
+    expect(retry.status).toBe(200);
   });
 });

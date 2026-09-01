@@ -100,6 +100,18 @@ describe("MCP bearer authorization", () => {
     expect(response.headers["www-authenticate"]).toBe(challenge);
   });
 
+  it("rejects an access token without the exact mcp:read scope", async () => {
+    const { app, store } = createTestApp();
+    await seedAccessToken(store, { scope: "mcp:write" });
+
+    const response = await request(app)
+      .post("/mcp")
+      .set("Authorization", `Bearer ${validToken}`);
+
+    expect(response.status).toBe(401);
+    expect(response.headers["www-authenticate"]).toBe(challenge);
+  });
+
   it("rejects query-string tokens even when the header token is valid", async () => {
     const { app, store } = createTestApp();
     await seedAccessToken(store);

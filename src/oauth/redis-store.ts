@@ -4,6 +4,8 @@ import type {
   AccessTokenRecord,
   AuthorizationCodeRecord,
   AuthorizationTransaction,
+  ExchangeAuthorizationCodeInput,
+  ExchangeAuthorizationCodeResult,
   RefreshTokenRecord,
   RegisteredClient,
   RotateRefreshTokenInput,
@@ -12,12 +14,90 @@ import type {
 
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
 
+const EXCHANGE_AUTHORIZATION_CODE_SCRIPT = `
+local function result(status, record)
+  if record then
+    return cjson.encode({ status = status, record = record })
+  end
+  return cjson.encode({ status = status })
+end
+
+local function fixedTimeChallengeMatch(left, right)
+  if type(left) ~= 'string' or type(right) ~= 'string' then
+    return false
+  end
+  local difference = bit.bxor(string.len(left), string.len(right))
+  for index = 1, 43 do
+    difference = bit.bor(
+      difference,
+      bit.bxor(string.byte(left, index) or 0, string.byte(right, index) or 0)
+    )
+  end
+  return difference == 0
+end
+
+local codeRecordJson = redis.call('GET', KEYS[1])
+if not codeRecordJson then
+  return result('missing')
+end
+if redis.call('EXISTS', KEYS[2]) == 1 or redis.call('EXISTS', KEYS[3]) == 1 then
+  return result('collision')
+end
+
+local codeRecord = cjson.decode(codeRecordJson)
+if codeRecord.clientId ~= ARGV[1]
+  or codeRecord.redirectUri ~= ARGV[2]
+  or codeRecord.resource ~= ARGV[3]
+  or not fixedTimeChallengeMatch(codeRecord.codeChallenge, ARGV[4])
+  or codeRecord.scope ~= ARGV[5] then
+  redis.call('DEL', KEYS[1])
+  return result('binding_mismatch')
+end
+
+local redisTime = redis.call('TIME')
+local nowMillis = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local accessTtlMillis = tonumber(ARGV[7]) * 1000
+local refreshTtlMillis = tonumber(ARGV[8]) * 1000
+local accessRecordJson = cjson.encode({
+  clientId = codeRecord.clientId,
+  resource = codeRecord.resource,
+  scope = codeRecord.scope,
+  expiresAt = nowMillis + accessTtlMillis
+})
+local refreshRecordJson = cjson.encode({
+  familyId = ARGV[6],
+  clientId = codeRecord.clientId,
+  resource = codeRecord.resource,
+  scope = codeRecord.scope,
+  expiresAt = nowMillis + refreshTtlMillis
+})
+
+local writeResult = redis.pcall('MSET', KEYS[2], accessRecordJson, KEYS[3], refreshRecordJson)
+if type(writeResult) == 'table' and writeResult.err then
+  return result('storage_error')
+end
+local accessExpiry = redis.pcall('PEXPIRE', KEYS[2], accessTtlMillis)
+local refreshExpiry = redis.pcall('PEXPIRE', KEYS[3], refreshTtlMillis)
+if accessExpiry ~= 1 or refreshExpiry ~= 1 then
+  redis.call('DEL', KEYS[2], KEYS[3])
+  return result('storage_error')
+end
+redis.call('DEL', KEYS[1])
+return result('issued', codeRecord)
+`;
+
 const ROTATE_REFRESH_TOKEN_SCRIPT = `
 local function result(status, record)
   if record then
     return cjson.encode({ status = status, record = record })
   end
   return cjson.encode({ status = status })
+end
+
+local function bindingsMatch(record)
+  return record.clientId == ARGV[2]
+    and record.resource == ARGV[3]
+    and record.scope == ARGV[4]
 end
 
 local oldRecordJson = redis.call('GET', KEYS[1])
@@ -28,6 +108,9 @@ if not oldRecordJson then
   end
 
   local usedRecord = cjson.decode(usedRecordJson)
+  if not bindingsMatch(usedRecord) then
+    return result('binding_mismatch')
+  end
   local revocationKey = ARGV[1] .. usedRecord.familyId
   if redis.call('EXISTS', revocationKey) == 1 then
     return result('revoked', usedRecord)
@@ -44,11 +127,17 @@ if not oldRecordJson then
     return result('missing')
   end
 
-  redis.call('SET', revocationKey, '1', 'PX', math.floor(remainingMillis))
+  local revoked = redis.pcall('SET', revocationKey, '1', 'PX', math.floor(remainingMillis))
+  if type(revoked) == 'table' and revoked.err then
+    return result('storage_error')
+  end
   return result('replayed', usedRecord)
 end
 
 local oldRecord = cjson.decode(oldRecordJson)
+if not bindingsMatch(oldRecord) then
+  return result('binding_mismatch')
+end
 local revocationKey = ARGV[1] .. oldRecord.familyId
 if redis.call('EXISTS', revocationKey) == 1 then
   return result('revoked', oldRecord)
@@ -65,20 +154,37 @@ if remainingMillis <= 0 then
   return result('missing')
 end
 
-local created = redis.call(
-  'SET',
-  KEYS[3],
-  oldRecordJson,
-  'PX',
-  math.floor(remainingMillis),
-  'NX'
-)
-if not created then
-  return result('missing')
+if redis.call('EXISTS', KEYS[2]) == 1
+  or redis.call('EXISTS', KEYS[3]) == 1
+  or redis.call('EXISTS', KEYS[4]) == 1 then
+  return result('collision')
 end
 
+local accessTtlMillis = tonumber(ARGV[5]) * 1000
+local accessRecordJson = cjson.encode({
+  clientId = oldRecord.clientId,
+  resource = oldRecord.resource,
+  scope = oldRecord.scope,
+  expiresAt = nowMillis + accessTtlMillis
+})
+
+local writeResult = redis.pcall(
+  'MSET',
+  KEYS[2], oldRecordJson,
+  KEYS[3], oldRecordJson,
+  KEYS[4], accessRecordJson
+)
+if type(writeResult) == 'table' and writeResult.err then
+  return result('storage_error')
+end
+local usedExpiry = redis.pcall('PEXPIRE', KEYS[2], math.floor(remainingMillis))
+local refreshExpiry = redis.pcall('PEXPIRE', KEYS[3], math.floor(remainingMillis))
+local accessExpiry = redis.pcall('PEXPIRE', KEYS[4], accessTtlMillis)
+if usedExpiry ~= 1 or refreshExpiry ~= 1 or accessExpiry ~= 1 then
+  redis.call('DEL', KEYS[2], KEYS[3], KEYS[4])
+  return result('storage_error')
+end
 redis.call('DEL', KEYS[1])
-redis.call('SET', KEYS[2], oldRecordJson, 'PX', math.floor(remainingMillis))
 return result('rotated', oldRecord)
 `;
 
@@ -187,6 +293,45 @@ function isRefreshTokenRecord(value: unknown): value is RefreshTokenRecord {
   );
 }
 
+function isAuthorizationCodeRecord(
+  value: unknown,
+): value is AuthorizationCodeRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.clientId === "string" &&
+    typeof record.redirectUri === "string" &&
+    typeof record.resource === "string" &&
+    typeof record.codeChallenge === "string" &&
+    typeof record.scope === "string"
+  );
+}
+
+function parseCodeExchangeResult(
+  value: unknown,
+): ExchangeAuthorizationCodeResult {
+  if (typeof value !== "string") {
+    throw new Error("Unexpected OAuth code exchange result");
+  }
+  const parsed = JSON.parse(value) as unknown;
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Unexpected OAuth code exchange result");
+  }
+  const result = parsed as Record<string, unknown>;
+  if (
+    result.status === "missing" ||
+    result.status === "binding_mismatch" ||
+    result.status === "collision" ||
+    result.status === "storage_error"
+  ) {
+    return { status: result.status };
+  }
+  if (result.status === "issued" && isAuthorizationCodeRecord(result.record)) {
+    return { status: "issued", record: result.record };
+  }
+  throw new Error("Unexpected OAuth code exchange result");
+}
+
 function parseRotationResult(value: unknown): RotateRefreshTokenResult {
   if (typeof value !== "string") {
     throw new Error("Unexpected OAuth refresh rotation result");
@@ -197,6 +342,11 @@ function parseRotationResult(value: unknown): RotateRefreshTokenResult {
   }
   const result = parsed as Record<string, unknown>;
   if (result.status === "missing") return { status: "missing" };
+  if (result.status === "binding_mismatch") {
+    return { status: "binding_mismatch" };
+  }
+  if (result.status === "collision") return { status: "collision" };
+  if (result.status === "storage_error") return { status: "storage_error" };
   if (
     (result.status === "rotated" ||
       result.status === "replayed" ||
@@ -256,6 +406,31 @@ export class RedisOAuthStore implements OAuthStore {
     );
   }
 
+  async exchangeAuthorizationCode(
+    input: ExchangeAuthorizationCodeInput,
+  ): Promise<ExchangeAuthorizationCodeResult> {
+    assertTtl(input.accessTtlSeconds);
+    assertTtl(input.refreshTtlSeconds);
+    const result = await this.client.eval(EXCHANGE_AUTHORIZATION_CODE_SCRIPT, {
+      keys: [
+        `code:${input.codeDigest}`,
+        `access:${input.accessDigest}`,
+        `refresh:${input.refreshDigest}`,
+      ],
+      arguments: [
+        input.clientId,
+        input.redirectUri,
+        input.resource,
+        input.codeChallenge,
+        input.scope,
+        input.familyId,
+        String(input.accessTtlSeconds),
+        String(input.refreshTtlSeconds),
+      ],
+    });
+    return parseCodeExchangeResult(result);
+  }
+
   async createAccessToken(
     digest: string,
     value: AccessTokenRecord,
@@ -288,13 +463,21 @@ export class RedisOAuthStore implements OAuthStore {
   async rotateRefreshToken(
     input: RotateRefreshTokenInput,
   ): Promise<RotateRefreshTokenResult> {
+    assertTtl(input.accessTtlSeconds);
     const result = await this.client.eval(ROTATE_REFRESH_TOKEN_SCRIPT, {
       keys: [
         `refresh:${input.oldDigest}`,
         `refresh-used:${input.oldDigest}`,
         `refresh:${input.newDigest}`,
+        `access:${input.accessDigest}`,
       ],
-      arguments: ["family-revoked:"],
+      arguments: [
+        "family-revoked:",
+        input.clientId,
+        input.resource,
+        input.scope,
+        String(input.accessTtlSeconds),
+      ],
     });
     return parseRotationResult(result);
   }
