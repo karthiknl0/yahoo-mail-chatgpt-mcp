@@ -7,6 +7,7 @@ import type {
   AuthorizationCodeRecord,
   AuthorizationTransaction,
   RefreshTokenRecord,
+  RegisteredClient,
   RotateRefreshTokenInput,
 } from "../src/oauth/types.js";
 import { InMemoryOAuthStore } from "./helpers/in-memory-oauth-store.js";
@@ -70,7 +71,40 @@ const codeExchange: ExchangeAuthorizationCodeInput = {
   refreshTtlSeconds,
 };
 
+function registeredClient(clientId: string): RegisteredClient {
+  return {
+    clientId,
+    redirectUris: [`https://client.example/${clientId}`],
+    tokenEndpointAuthMethod: "none",
+  };
+}
+
 describe("OAuth store contract", () => {
+  it("expires registered clients and frees the active-client cap", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    const first = registeredClient("client-1");
+    const rejected = registeredClient("client-2");
+
+    expect(await store.registerClient(first, 10, 1)).toBe(true);
+    expect(await store.registerClient(rejected, 10, 1)).toBe(false);
+    expect(await store.getClient(rejected.clientId)).toBeNull();
+
+    store.advanceBy(10_000);
+    expect(await store.getClient(first.clientId)).toBeNull();
+    expect(await store.registerClient(rejected, 10, 1)).toBe(true);
+  });
+
+  it("enforces the active-client cap across concurrent registrations", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        store.registerClient(registeredClient(`client-${index}`), 600, 3),
+      ),
+    );
+
+    expect(results.filter(Boolean)).toHaveLength(3);
+  });
+
   it("consumes an authorization transaction exactly once", async () => {
     const store = new InMemoryOAuthStore(1_700_000_000_000);
     await store.createTransaction("tx-1", transaction, 600);
@@ -575,6 +609,35 @@ function redisStore(fake: StrictFakeRedisClient): RedisOAuthStore {
 }
 
 describe("RedisOAuthStore command boundaries", () => {
+  it("retains registered clients with an atomic global cap", async () => {
+    const fake = new StrictFakeRedisClient();
+    const store = redisStore(fake);
+    const client = registeredClient("client-1");
+
+    expect(await store.registerClient(client, 600, 3)).toBe(true);
+    fake.evalReply = 0;
+    expect(
+      await store.registerClient(registeredClient("client-2"), 600, 3),
+    ).toBe(false);
+    expect(fake.calls).toEqual([
+      {
+        method: "eval",
+        keys: ["client-active", "client:client-1"],
+        arguments: [JSON.stringify(client), "600", "3", "client-1"],
+      },
+      {
+        method: "eval",
+        keys: ["client-active", "client:client-2"],
+        arguments: [
+          JSON.stringify(registeredClient("client-2")),
+          "600",
+          "3",
+          "client-2",
+        ],
+      },
+    ]);
+  });
+
   it("uses bounded prefixes, expiry-bearing SET, and GETDEL", async () => {
     const fake = new StrictFakeRedisClient();
     const store = redisStore(fake);

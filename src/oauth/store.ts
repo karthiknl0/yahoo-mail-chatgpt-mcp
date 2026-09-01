@@ -10,8 +10,17 @@ import type {
   RotateRefreshTokenResult,
 } from "./types.js";
 
+/** One refresh-token lifetime keeps stale public registrations bounded. */
+export const CLIENT_REGISTRATION_RETENTION_SECONDS = 30 * 24 * 60 * 60;
+/** 32 maximum-size public records consume about 1 MiB of Key Value storage. */
+export const MAX_ACTIVE_OAUTH_CLIENTS = 32;
+
 export interface OAuthStore {
-  registerClient(client: RegisteredClient): Promise<void>;
+  registerClient(
+    client: RegisteredClient,
+    retentionSeconds?: number,
+    maxActiveClients?: number,
+  ): Promise<boolean>;
   getClient(clientId: string): Promise<RegisteredClient | null>;
   createTransaction(
     id: string,

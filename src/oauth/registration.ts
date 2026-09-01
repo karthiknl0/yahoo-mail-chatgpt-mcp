@@ -8,7 +8,11 @@ import {
 } from "express";
 import { z } from "zod/v4";
 import type { AppConfig } from "../config.js";
-import type { OAuthStore } from "./store.js";
+import {
+  CLIENT_REGISTRATION_RETENTION_SECONDS,
+  MAX_ACTIVE_OAUTH_CLIENTS,
+  type OAuthStore,
+} from "./store.js";
 import type { RegisteredClient } from "./types.js";
 
 const REGISTRATION_WINDOW_SECONDS = 60;
@@ -143,7 +147,18 @@ export function registrationRouter(
         }
 
         const client = toRegisteredClient(parsed.data);
-        await store.registerClient(client);
+        const registered = await store.registerClient(
+          client,
+          CLIENT_REGISTRATION_RETENTION_SECONDS,
+          MAX_ACTIVE_OAUTH_CLIENTS,
+        );
+        if (!registered) {
+          res
+            .setHeader("Retry-After", "60")
+            .status(503)
+            .json({ error: "temporarily_unavailable" });
+          return;
+        }
         res.status(201).json(toRegistrationResponse(client));
       } catch (error) {
         next(error);

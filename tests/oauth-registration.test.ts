@@ -71,6 +71,25 @@ describe("dynamic client registration", () => {
     expect(first.body.client_id).not.toBe(second.body.client_id);
   });
 
+  it("returns a transient error when the durable client cap is full", async () => {
+    const store = new InMemoryOAuthStore();
+    for (let index = 0; index < 32; index += 1) {
+      await store.registerClient({
+        clientId: `existing-${index}`,
+        redirectUris: [`https://client.example/${index}`],
+        tokenEndpointAuthMethod: "none",
+      });
+    }
+    const { app } = createTestApp(store);
+
+    const response = await request(app).post("/register").send(publicClient);
+
+    expect(response.status).toBe(503);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["retry-after"]).toBe("60");
+    expect(response.body).toEqual({ error: "temporarily_unavailable" });
+  });
+
   it.each([
     ["missing redirect URIs", { ...publicClient, redirect_uris: undefined }],
     [

@@ -1,4 +1,8 @@
-import type { OAuthStore } from "../../src/oauth/store.js";
+import {
+  CLIENT_REGISTRATION_RETENTION_SECONDS,
+  MAX_ACTIVE_OAUTH_CLIENTS,
+  type OAuthStore,
+} from "../../src/oauth/store.js";
 import type {
   AccessTokenRecord,
   AuthorizationCodeRecord,
@@ -17,7 +21,7 @@ interface ExpiringValue<T> {
 }
 
 export class InMemoryOAuthStore implements OAuthStore {
-  private readonly clients = new Map<string, RegisteredClient>();
+  private readonly clients = new Map<string, ExpiringValue<RegisteredClient>>();
   private readonly transactions = new Map<
     string,
     ExpiringValue<AuthorizationTransaction>
@@ -67,12 +71,29 @@ export class InMemoryOAuthStore implements OAuthStore {
     await this.createRefreshToken(digest, value, ttlSeconds);
   }
 
-  async registerClient(client: RegisteredClient): Promise<void> {
-    this.clients.set(client.clientId, structuredClone(client));
+  async registerClient(
+    client: RegisteredClient,
+    retentionSeconds = CLIENT_REGISTRATION_RETENTION_SECONDS,
+    maxActiveClients = MAX_ACTIVE_OAUTH_CLIENTS,
+  ): Promise<boolean> {
+    if (
+      !Number.isSafeInteger(retentionSeconds) ||
+      retentionSeconds <= 0 ||
+      retentionSeconds > 30 * 24 * 60 * 60 ||
+      !Number.isSafeInteger(maxActiveClients) ||
+      maxActiveClients <= 0 ||
+      maxActiveClients > MAX_ACTIVE_OAUTH_CLIENTS
+    ) {
+      throw new RangeError("OAuth client registration is invalid");
+    }
+    if (this.read(this.clients, client.clientId)) return false;
+    if (this.activeClientCount() >= maxActiveClients) return false;
+    this.clients.set(client.clientId, this.expiring(client, retentionSeconds));
+    return true;
   }
 
   async getClient(clientId: string): Promise<RegisteredClient | null> {
-    return this.clone(this.clients.get(clientId));
+    return this.read(this.clients, clientId);
   }
 
   async createTransaction(
@@ -337,8 +358,11 @@ export class InMemoryOAuthStore implements OAuthStore {
     return value;
   }
 
-  private clone<T>(value: T | undefined): T | null {
-    return value === undefined ? null : structuredClone(value);
+  private activeClientCount(): number {
+    for (const clientId of this.clients.keys()) {
+      this.read(this.clients, clientId);
+    }
+    return this.clients.size;
   }
 
   private isFamilyRevoked(familyId: string): boolean {

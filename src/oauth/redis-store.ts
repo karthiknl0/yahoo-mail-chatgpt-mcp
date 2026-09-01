@@ -1,5 +1,9 @@
 import type { RedisClientType } from "redis";
-import type { OAuthStore } from "./store.js";
+import {
+  CLIENT_REGISTRATION_RETENTION_SECONDS,
+  MAX_ACTIVE_OAUTH_CLIENTS,
+  type OAuthStore,
+} from "./store.js";
 import type {
   AccessTokenRecord,
   AuthorizationCodeRecord,
@@ -13,6 +17,36 @@ import type {
 } from "./types.js";
 
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
+
+const REGISTER_CLIENT_SCRIPT = `
+local redisTime = redis.call('TIME')
+local nowMillis = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local retentionSeconds = tonumber(ARGV[2])
+local retentionMillis = retentionSeconds * 1000
+
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', nowMillis)
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then
+  return 0
+end
+
+local stored = redis.pcall('SET', KEYS[2], ARGV[1], 'EX', retentionSeconds, 'NX')
+if type(stored) == 'table' and stored.err then
+  return -1
+end
+if not stored then
+  return 0
+end
+
+local indexed = redis.pcall('ZADD', KEYS[1], nowMillis + retentionMillis, ARGV[4])
+if type(indexed) == 'table' and indexed.err then
+  redis.call('DEL', KEYS[2])
+  return -1
+end
+if redis.call('PTTL', KEYS[1]) < retentionMillis then
+  redis.call('PEXPIRE', KEYS[1], retentionMillis)
+end
+return 1
+`;
 
 const EXCHANGE_AUTHORIZATION_CODE_SCRIPT = `
 local function result(status, record)
@@ -255,6 +289,20 @@ function assertTtl(ttlSeconds: number, maximum = THIRTY_DAYS_SECONDS): void {
   }
 }
 
+function assertClientRegistration(
+  retentionSeconds: number,
+  maxActiveClients: number,
+): void {
+  assertTtl(retentionSeconds);
+  if (
+    !Number.isSafeInteger(maxActiveClients) ||
+    maxActiveClients <= 0 ||
+    maxActiveClients > MAX_ACTIVE_OAUTH_CLIENTS
+  ) {
+    throw new RangeError("OAuth client cap is outside the allowed range");
+  }
+}
+
 function assertRateLimitReservation(
   keys: readonly string[],
   reservationId: string,
@@ -374,8 +422,25 @@ export class RedisOAuthStore implements OAuthStore {
     private readonly now: () => number = Date.now,
   ) {}
 
-  async registerClient(client: RegisteredClient): Promise<void> {
-    await this.client.set(`client:${client.clientId}`, serialize(client));
+  async registerClient(
+    client: RegisteredClient,
+    retentionSeconds = CLIENT_REGISTRATION_RETENTION_SECONDS,
+    maxActiveClients = MAX_ACTIVE_OAUTH_CLIENTS,
+  ): Promise<boolean> {
+    assertClientRegistration(retentionSeconds, maxActiveClients);
+    const result = await this.client.eval(REGISTER_CLIENT_SCRIPT, {
+      keys: ["client-active", `client:${client.clientId}`],
+      arguments: [
+        serialize(client),
+        String(retentionSeconds),
+        String(maxActiveClients),
+        client.clientId,
+      ],
+    });
+    if (result !== 0 && result !== 1) {
+      throw new Error("Unexpected OAuth client registration result");
+    }
+    return result === 1;
   }
 
   async getClient(clientId: string): Promise<RegisteredClient | null> {
