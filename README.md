@@ -225,6 +225,8 @@ Terminate TLS at a trusted reverse proxy or managed hosting platform and expose 
 
 [`render.yaml`](render.yaml) defines exactly one Node web service and one internal-only Render Key Value instance in the same region. It uses Render's `RENDER_EXTERNAL_URL`, binds the process to `0.0.0.0:$PORT`, wires `REDIS_URL` from the Key Value connection string, and exposes `/health` for process health only.
 
+The web service is pinned to the reviewed `codex/render-single-yahoo-mcp` branch. Push the reviewed commit to that branch before synchronizing the Blueprint. After a future merge, switch the Blueprint only in a separately reviewed commit: update `branch` to the target branch, push that commit, then synchronize and verify the deployment. Do not let Render follow an unreviewed branch.
+
 The Blueprint intentionally leaves these dashboard-managed values unset: `YAHOO_EMAIL`, `YAHOO_APP_PASSWORD`, `MCP_LOGIN_PASSPHRASE_SCRYPT`, `OAUTH_COOKIE_KEY`, and `ALLOWED_HOSTS`. Before creating any deployment, set `ALLOWED_HOSTS` to the exact assigned Render hostname and enter the remaining values through Render's secret controls. Do not add `RENDER_EXTERNAL_URL` manually.
 
 The checked-in plans are free for initial evaluation. The free Key Value plan supports `noeviction`, which makes writes fail rather than silently evict OAuth state, but it has no disk persistence ([Render Key Value documentation](https://render.com/docs/key-value)). A Key Value restart invalidates outstanding OAuth state and requires clients to authorize again. Select and approve a paid, persistent plan before treating this as a production deployment.

@@ -1,5 +1,7 @@
 # Cloudflare Worker Deployment Implementation Plan
 
+> **Superseded — historical reference only.** Do not execute this Cloudflare plan. Follow the [Render Single-Yahoo MCP Implementation Plan](2026-08-31-render-single-yahoo-mcp.md) and its [Render design](../specs/2026-08-31-render-single-yahoo-mcp-design.md) for all deployment work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Convert the security-first Yahoo Mail MCP server into an OAuth-protected native Cloudflare Worker that lets one authorized ChatGPT user retrieve bounded, sanitized, read-only mail.

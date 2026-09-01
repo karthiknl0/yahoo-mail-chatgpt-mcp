@@ -1,6 +1,7 @@
 services:
   - type: web
     name: yahoo-mail-chatgpt-mcp
+    branch: codex/render-single-yahoo-mcp
     runtime: node
     region: oregon
     plan: free
