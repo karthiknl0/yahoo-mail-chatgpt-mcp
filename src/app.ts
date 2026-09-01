@@ -16,8 +16,10 @@ import helmet from "helmet";
 import type { AppConfig } from "./config.js";
 import { authorizationRouter } from "./oauth/authorization.js";
 import { oauthMetadataRouter } from "./oauth/metadata.js";
+import { requireMcpBearer } from "./oauth/middleware.js";
 import { registrationRouter } from "./oauth/registration.js";
 import type { OAuthStore } from "./oauth/store.js";
+import { tokenRouter } from "./oauth/token.js";
 
 export interface AppDependencies {
   oauthStore: OAuthStore;
@@ -38,15 +40,6 @@ function enforceBodyLimit(
     }
   }
   next();
-}
-
-/**
- * Fails closed until Task 5 replaces this boundary with OAuth access-token
- * validation backed by the injected OAuth store.
- */
-function rejectUntilOAuth(_req: Request, res: Response): void {
-  res.setHeader("WWW-Authenticate", "Bearer");
-  res.status(401).json({ error: "unauthorized" });
 }
 
 export function createApp(
@@ -84,6 +77,7 @@ export function createApp(
   app.use(oauthMetadataRouter(config));
   app.use(registrationRouter(config, dependencies.oauthStore));
   app.use(authorizationRouter(config, dependencies.oauthStore));
+  app.use(tokenRouter(config, dependencies.oauthStore));
 
   const limiter = rateLimit({
     windowMs: 60_000,
@@ -97,7 +91,7 @@ export function createApp(
     "/mcp",
     limiter,
     enforceBodyLimit,
-    rejectUntilOAuth,
+    requireMcpBearer(config, dependencies.oauthStore),
     json({ limit: "256kb", type: "application/json" }),
     (req, res) => void nodeHandler(req, res, req.body),
   );

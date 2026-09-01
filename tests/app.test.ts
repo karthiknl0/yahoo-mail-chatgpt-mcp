@@ -40,7 +40,22 @@ describe("application", () => {
     const response = await request(createTestApp()).post("/mcp").send({});
     expect(response.status).toBe(401);
     expect(response.body).toEqual({ error: "unauthorized" });
+    expect(response.headers["www-authenticate"]).toBe(
+      'Bearer resource_metadata="https://localhost.example.test/.well-known/oauth-protected-resource/mcp"',
+    );
   });
+
+  it.each(["get", "post", "put", "patch", "delete"] as const)(
+    "protects %s /mcp before creating an MCP server",
+    async (method) => {
+      const response = await request(createTestApp())[method]("/mcp");
+
+      expect(response.status).toBe(401);
+      expect(response.headers["www-authenticate"]).toBe(
+        'Bearer resource_metadata="https://localhost.example.test/.well-known/oauth-protected-resource/mcp"',
+      );
+    },
+  );
 
   it("rejects oversized unauthenticated MCP JSON with the OAuth boundary", async () => {
     const response = await request(createTestApp())
