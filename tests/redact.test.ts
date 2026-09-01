@@ -46,10 +46,18 @@ describe("email redaction", () => {
 
   it("redacts opaque bearer credentials without dots", () => {
     const token = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const mixedToken = "AbCdEfGhIjKlMnOp+/~_-=";
 
     for (const input of [`Bearer ${token}`, `Authorization: Bearer ${token}`]) {
       expect(sanitizeEmailText(input)).not.toContain(token);
     }
+
+    const mixedOutput = sanitizeEmailText(
+      `Authorization: Bearer ${mixedToken}, preserve this sentence.`,
+    );
+    expect(mixedOutput).not.toContain(mixedToken);
+    expect(mixedOutput).not.toContain("+/~_-=");
+    expect(mixedOutput).toBe("[REDACTED], preserve this sentence.");
 
     expect(sanitizeEmailText("The bearer market moved today.")).toContain(
       "bearer market",
