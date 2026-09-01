@@ -14,6 +14,7 @@ import express, {
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import type { AppConfig } from "./config.js";
+import { authorizationRouter } from "./oauth/authorization.js";
 import { oauthMetadataRouter } from "./oauth/metadata.js";
 import { registrationRouter } from "./oauth/registration.js";
 import type { OAuthStore } from "./oauth/store.js";
@@ -76,6 +77,7 @@ export function createApp(
 
   app.use(oauthMetadataRouter(config));
   app.use(registrationRouter(config, dependencies.oauthStore));
+  app.use(authorizationRouter(config, dependencies.oauthStore));
 
   const limiter = rateLimit({
     windowMs: 60_000,
