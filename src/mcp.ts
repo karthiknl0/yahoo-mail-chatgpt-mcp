@@ -76,12 +76,13 @@ export function createYahooMcpServer(config: AppConfig): McpServer {
         unreadOnly: z.boolean().default(false),
       }),
     },
-    async ({ hours, limit, unreadOnly }) => {
+    async ({ hours, limit, unreadOnly }, context) => {
       const since = new Date(Date.now() - hours * 60 * 60 * 1000);
       const messages = await reader.listEmails({
         since,
         limit: config.maxEmailsPerRequest,
         unreadOnly,
+        signal: context.mcpReq.signal,
       });
       const ranked = messages
         .map((mail) => ({
@@ -119,7 +120,7 @@ export function createYahooMcpServer(config: AppConfig): McpServer {
           .optional(),
       }),
     },
-    async ({ folder, limit, unreadOnly, hours }) => {
+    async ({ folder, limit, unreadOnly, hours }, context) => {
       const since = hours
         ? new Date(Date.now() - hours * 60 * 60 * 1000)
         : undefined;
@@ -127,6 +128,7 @@ export function createYahooMcpServer(config: AppConfig): McpServer {
         folder,
         limit,
         unreadOnly,
+        signal: context.mcpReq.signal,
         ...(since ? { since } : {}),
       });
       return toolResult(
@@ -155,8 +157,13 @@ export function createYahooMcpServer(config: AppConfig): McpServer {
           .default(10),
       }),
     },
-    async ({ query, folder, limit }) => {
-      const messages = await reader.listEmails({ folder, limit, query });
+    async ({ query, folder, limit }, context) => {
+      const messages = await reader.listEmails({
+        folder,
+        limit,
+        query,
+        signal: context.mcpReq.signal,
+      });
       return toolResult(
         messages.map((mail) => ({
           ...mail,
@@ -177,8 +184,10 @@ export function createYahooMcpServer(config: AppConfig): McpServer {
         folder: z.string().min(1).max(200).default("INBOX"),
       }),
     },
-    async ({ uid, folder }) => {
-      const message = await reader.readEmail(uid, folder);
+    async ({ uid, folder }, context) => {
+      const message = await reader.readEmail(uid, folder, {
+        signal: context.mcpReq.signal,
+      });
       if (!message) return toolResult({ found: false });
       return toolResult({
         found: true,
@@ -195,7 +204,8 @@ export function createYahooMcpServer(config: AppConfig): McpServer {
       description: "List Yahoo mailbox folder names. This is read-only.",
       inputSchema: z.object({}),
     },
-    async () => toolResult(await reader.listFolders()),
+    async (_args, context) =>
+      toolResult(await reader.listFolders({ signal: context.mcpReq.signal })),
   );
 
   return server;

@@ -1,7 +1,12 @@
 import { ImapFlow, type FetchMessageObject } from "imapflow";
 import { simpleParser } from "mailparser";
 import type { AppConfig } from "./config.js";
-import { truncateSanitized } from "./security/redact.js";
+import {
+  truncateMailDisplayText,
+  truncateSanitized,
+} from "./security/redact.js";
+
+const MAX_MAIL_DISPLAY_CHARS = 200;
 
 export interface SafeMailSummary {
   uid: number;
@@ -69,10 +74,16 @@ async function toSummary(
 
   return {
     uid: message.uid,
-    folder,
-    senderName: sender.name,
-    senderEmail: sender.address,
-    subject: message.envelope?.subject ?? "(no subject)",
+    folder: truncateMailDisplayText(folder, MAX_MAIL_DISPLAY_CHARS),
+    senderName: truncateMailDisplayText(sender.name, MAX_MAIL_DISPLAY_CHARS),
+    senderEmail: truncateMailDisplayText(
+      sender.address,
+      MAX_MAIL_DISPLAY_CHARS,
+    ),
+    subject: truncateMailDisplayText(
+      message.envelope?.subject ?? "(no subject)",
+      MAX_MAIL_DISPLAY_CHARS,
+    ),
     receivedAt: toIsoDate(message.internalDate ?? message.envelope?.date),
     unread: !message.flags?.has("\\Seen"),
     hasAttachments: (parsed?.attachments.length ?? 0) > 0,
@@ -80,40 +91,107 @@ async function toSummary(
   };
 }
 
+function abortError(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) return reason;
+  const error = new Error("Yahoo Mail request aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw abortError(signal);
+}
+
+async function awaitAbortable<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
 export class YahooMailReader {
   constructor(private readonly config: AppConfig) {}
 
   private async withMailbox<T>(
     folder: string,
-    fn: (client: ImapFlow) => Promise<T>,
+    fn: (client: ImapFlow, signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return this.withClient(async (client, operationSignal) => {
+      await awaitAbortable(client.connect(), operationSignal);
+      await awaitAbortable(
+        client.mailboxOpen(folder, { readOnly: true }),
+        operationSignal,
+      );
+      return fn(client, operationSignal);
+    }, signal);
+  }
+
+  private async withClient<T>(
+    fn: (client: ImapFlow, signal: AbortSignal) => Promise<T>,
+    requestSignal?: AbortSignal,
   ): Promise<T> {
     const client = makeClient(this.config);
+    const operation = new AbortController();
+    const abortForRequest = () => operation.abort(requestSignal?.reason);
+    if (requestSignal?.aborted) {
+      abortForRequest();
+    } else {
+      requestSignal?.addEventListener("abort", abortForRequest, {
+        once: true,
+      });
+    }
+    const timeoutMs = Math.min(
+      120_000,
+      Math.max(
+        1_000,
+        this.config.imapConnectTimeoutMs + this.config.imapCommandTimeoutMs,
+      ),
+    );
+    const timeout = setTimeout(
+      () => operation.abort(new Error("Yahoo Mail request timed out")),
+      timeoutMs,
+    );
+    const signal = operation.signal;
+    const closeOnAbort = () => client.close();
+    signal.addEventListener("abort", closeOnAbort, { once: true });
     try {
-      await client.connect();
-      await client.mailboxOpen(folder, { readOnly: true });
-      return await fn(client);
+      throwIfAborted(signal);
+      return await fn(client, signal);
     } finally {
-      try {
-        await client.logout();
-      } catch {
+      clearTimeout(timeout);
+      requestSignal?.removeEventListener("abort", abortForRequest);
+      signal.removeEventListener("abort", closeOnAbort);
+      if (signal.aborted) {
         client.close();
+      } else {
+        try {
+          await client.logout();
+        } catch {
+          client.close();
+        }
       }
     }
   }
 
-  async listFolders(): Promise<string[]> {
-    const client = makeClient(this.config);
-    try {
-      await client.connect();
-      const folders = await client.list();
-      return folders.map((folder) => folder.path).slice(0, 100);
-    } finally {
-      try {
-        await client.logout();
-      } catch {
-        client.close();
-      }
-    }
+  async listFolders(options: { signal?: AbortSignal } = {}): Promise<string[]> {
+    return this.withClient(async (client, signal) => {
+      await awaitAbortable(client.connect(), signal);
+      const folders = await awaitAbortable(client.list(), signal);
+      return folders
+        .map((folder) =>
+          truncateMailDisplayText(folder.path, MAX_MAIL_DISPLAY_CHARS),
+        )
+        .slice(0, 100);
+    }, options.signal);
   }
 
   async listEmails(options: {
@@ -122,6 +200,7 @@ export class YahooMailReader {
     unreadOnly?: boolean;
     since?: Date;
     query?: string;
+    signal?: AbortSignal;
   }): Promise<SafeMailSummary[]> {
     const folder = options.folder ?? "INBOX";
     const limit = Math.min(
@@ -129,70 +208,88 @@ export class YahooMailReader {
       this.config.maxEmailsPerRequest,
     );
 
-    return this.withMailbox(folder, async (client) => {
-      const criteria: Record<string, unknown> = {};
-      if (options.unreadOnly) criteria.seen = false;
-      if (options.since) criteria.since = options.since;
-      if (options.query) criteria.text = options.query;
+    return this.withMailbox(
+      folder,
+      async (client, signal) => {
+        const criteria: Record<string, unknown> = {};
+        if (options.unreadOnly) criteria.seen = false;
+        if (options.since) criteria.since = options.since;
+        if (options.query) criteria.text = options.query;
 
-      const searchResult = await client.search(criteria, { uid: true });
-      const uids = Array.isArray(searchResult) ? searchResult : [];
-      const selected = uids.slice(-limit).reverse();
-      const results: SafeMailSummary[] = [];
-
-      for (const uid of selected) {
-        const message = await client.fetchOne(
-          uid,
-          {
-            uid: true,
-            envelope: true,
-            flags: true,
-            internalDate: true,
-            source: true,
-          },
-          { uid: true },
+        const searchResult = await awaitAbortable(
+          client.search(criteria, { uid: true }),
+          signal,
         );
-        if (message)
-          results.push(
-            await toSummary(message, folder, this.config.maxPreviewChars),
-          );
-      }
+        const uids = Array.isArray(searchResult) ? searchResult : [];
+        const selected = uids.slice(-limit).reverse();
+        const results: SafeMailSummary[] = [];
 
-      return results;
-    });
+        for (const uid of selected) {
+          const message = await awaitAbortable(
+            client.fetchOne(
+              uid,
+              {
+                uid: true,
+                envelope: true,
+                flags: true,
+                internalDate: true,
+                source: true,
+              },
+              { uid: true },
+            ),
+            signal,
+          );
+          if (message)
+            results.push(
+              await toSummary(message, folder, this.config.maxPreviewChars),
+            );
+        }
+
+        return results;
+      },
+      options.signal,
+    );
   }
 
   async readEmail(
     uid: number,
     folder = "INBOX",
+    options: { signal?: AbortSignal } = {},
   ): Promise<SafeMailDetail | null> {
-    return this.withMailbox(folder, async (client) => {
-      const message = await client.fetchOne(
-        uid,
-        {
-          uid: true,
-          envelope: true,
-          flags: true,
-          internalDate: true,
-          source: true,
-        },
-        { uid: true },
-      );
-      if (!message) return null;
+    return this.withMailbox(
+      folder,
+      async (client, signal) => {
+        const message = await awaitAbortable(
+          client.fetchOne(
+            uid,
+            {
+              uid: true,
+              envelope: true,
+              flags: true,
+              internalDate: true,
+              source: true,
+            },
+            { uid: true },
+          ),
+          signal,
+        );
+        if (!message) return null;
 
-      const summary = await toSummary(
-        message,
-        folder,
-        this.config.maxPreviewChars,
-      );
-      const parsed = message.source
-        ? await simpleParser(message.source)
-        : undefined;
-      const text = parsed?.text ?? parsed?.html?.toString() ?? "";
-      return {
-        ...summary,
-        body: truncateSanitized(text, this.config.maxReadChars),
-      };
-    });
+        const summary = await toSummary(
+          message,
+          folder,
+          this.config.maxPreviewChars,
+        );
+        const parsed = message.source
+          ? await simpleParser(message.source)
+          : undefined;
+        const text = parsed?.text ?? parsed?.html?.toString() ?? "";
+        return {
+          ...summary,
+          body: truncateSanitized(text, this.config.maxReadChars),
+        };
+      },
+      options.signal,
+    );
   }
 }

@@ -11,6 +11,9 @@ const longDigitPattern = /\b(?:\d[ -]?){12,19}\b/g;
 const contextualCodePattern = /\b\d(?:[\s.-]?\d){3,7}\b/g;
 const bearerLikePattern =
   /\b(?:bearer\s+)?[A-Za-z0-9_-]{24,}\.[A-Za-z0-9._-]{8,}\b/gi;
+const controlCharacterPattern = /[\p{Cc}\p{Cf}]/gu;
+const promptInjectionPattern =
+  /\b(?:ignore|disregard|override|forget|bypass)\b[\s\S]{0,80}\b(?:previous|prior|system|developer|instructions?|rules?|prompt|guardrails?)\b|\b(?:system|developer)\s*(?:message|prompt|instructions?)\s*:/gi;
 
 function normalizeCode(candidate: string): string {
   return candidate.replace(/[^0-9]/g, "");
@@ -60,16 +63,29 @@ function redactContextualCodes(text: string): string {
 }
 
 export function sanitizeEmailText(input: string): string {
-  let text = stripHtml(input);
+  let text = stripHtml(input).replace(controlCharacterPattern, " ");
   text = redactSensitiveUrls(text);
   text = text.replace(bearerLikePattern, REDACTED);
   text = text.replace(longDigitPattern, REDACTED);
   text = redactContextualCodes(text);
+  text = text.replace(promptInjectionPattern, "[REDACTED UNSAFE CONTENT]");
   return text.replace(/\s+/g, " ").trim();
 }
 
 export function truncateSanitized(input: string, maxChars: number): string {
   const sanitized = sanitizeEmailText(input);
+  if (sanitized.length <= maxChars) return sanitized;
+  return `${sanitized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+export function truncateMailDisplayText(
+  input: string,
+  maxChars: number,
+): string {
+  const sanitized = sanitizeEmailText(input).replace(
+    urlPattern,
+    "[REDACTED LINK]",
+  );
   if (sanitized.length <= maxChars) return sanitized;
   return `${sanitized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
