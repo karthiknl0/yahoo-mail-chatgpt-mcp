@@ -10,6 +10,7 @@ import {
 const MAX_MAIL_DISPLAY_CHARS = 200;
 const MAX_MAIL_SOURCE_BYTES = 512 * 1024;
 const MAX_PARSED_MAIL_BODY_CHARS = 50_000;
+const OVERSIZED_HTML_FALLBACK = "[HTML content omitted: too large]";
 
 export interface SafeMailSummary {
   uid: number;
@@ -144,6 +145,10 @@ function boundedMailSource(source: Buffer): Readable {
   return Readable.from(chunks());
 }
 
+function isOversizedHtmlError(error: Error): boolean {
+  return /^HTML too long for parsing \d+ bytes$/.test(error.message);
+}
+
 async function parseMail(
   message: FetchMessageObject,
   signal: AbortSignal,
@@ -187,7 +192,15 @@ async function parseMail(
       }
     };
     const onAbort = () => finish(abortError(signal));
-    const onError = (error: Error) => finish(error);
+    const onError = (error: Error) => {
+      if (!isOversizedHtmlError(error)) {
+        finish(error);
+        return;
+      }
+      if (!text?.trim()) text = OVERSIZED_HTML_FALLBACK;
+      html = undefined;
+      finish();
+    };
     const onEnd = () => finish();
 
     parser.on(
