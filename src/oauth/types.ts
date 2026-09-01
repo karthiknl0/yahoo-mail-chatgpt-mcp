@@ -28,6 +28,12 @@ export interface AuthorizationCodeRecord {
   readonly scope: string;
 }
 
+export type PromoteClientAndCreateAuthorizationCodeResult =
+  | { readonly status: "promoted" }
+  | { readonly status: "missing" }
+  | { readonly status: "collision" }
+  | { readonly status: "storage_error" };
+
 export interface AccessTokenRecord {
   readonly clientId: string;
   readonly resource: string;

@@ -7,6 +7,7 @@ import { sha256Token } from "../src/oauth/crypto.js";
 import type {
   AuthorizationCodeRecord,
   AuthorizationTransaction,
+  PromoteClientAndCreateAuthorizationCodeResult,
   RegisteredClient,
 } from "../src/oauth/types.js";
 import { InMemoryOAuthStore } from "./helpers/in-memory-oauth-store.js";
@@ -84,6 +85,26 @@ class CapturingStore extends InMemoryOAuthStore {
       ttlSeconds,
     });
     await super.createAuthorizationCode(digest, value, ttlSeconds);
+  }
+
+  override async promoteClientAndCreateAuthorizationCode(
+    digest: string,
+    value: AuthorizationCodeRecord,
+    ttlSeconds: number,
+  ): Promise<PromoteClientAndCreateAuthorizationCodeResult> {
+    const result = await super.promoteClientAndCreateAuthorizationCode(
+      digest,
+      value,
+      ttlSeconds,
+    );
+    if (result.status === "promoted") {
+      this.createdCodes.push({
+        digest,
+        value: structuredClone(value),
+        ttlSeconds,
+      });
+    }
+    return result;
   }
 
   override async incrementRateLimit(
@@ -396,14 +417,16 @@ describe("OAuth authorization decision", () => {
 
   it("rejects expired and consumed transactions", async () => {
     const { app, store } = createTestApp();
-    await store.registerClient(client);
+    await store.registerClient(client, 600);
     const expired = await beginAuthorization(app);
     store.advanceBy(10 * 60 * 1_000);
 
     const expiredResponse = await postAuthorization(app, expired);
     expect(expiredResponse.status).toBe(400);
     expect(expiredResponse.body).toEqual({ error: "invalid_request" });
+    expect(await store.getClient(client.clientId)).toBeNull();
 
+    await store.registerClient(client);
     const consumed = await beginAuthorization(app);
     await store.consumeTransaction(consumed.transactionId);
     const consumedResponse = await postAuthorization(app, consumed);
@@ -413,7 +436,7 @@ describe("OAuth authorization decision", () => {
 
   it("rejects an incorrect passphrase without issuing a code", async () => {
     const { app, store } = createTestApp();
-    await store.registerClient(client);
+    await store.registerClient(client, 600);
     const form = await beginAuthorization(app);
 
     const response = await postAuthorization(app, form, {
@@ -424,6 +447,8 @@ describe("OAuth authorization decision", () => {
     expect(response.headers.location).toBeUndefined();
     expect(response.body).toEqual({ error: "access_denied" });
     expect(store.createdCodes).toHaveLength(0);
+    store.advanceBy(600_000);
+    expect(await store.getClient(client.clientId)).toBeNull();
   });
 
   it("does not charge successful authorizations against failure buckets", async () => {
@@ -602,7 +627,7 @@ describe("OAuth authorization decision", () => {
 
   it("redirects an explicit denial with only the OAuth error and original state", async () => {
     const { app, store } = createTestApp();
-    await store.registerClient(client);
+    await store.registerClient(client, 600);
     const form = await beginAuthorization(app);
 
     const response = await postAuthorization(app, form, {
@@ -617,11 +642,13 @@ describe("OAuth authorization decision", () => {
       error: "access_denied",
       state: "original-state",
     });
+    store.advanceBy(600_000);
+    expect(await store.getClient(client.clientId)).toBeNull();
   });
 
   it("issues a five-minute SHA-256-indexed bound code and redirects only code and state", async () => {
     const { app, store } = createTestApp();
-    await store.registerClient(client);
+    await store.registerClient(client, 600);
     const form = await beginAuthorization(app);
 
     const response = await postAuthorization(app, form);
@@ -648,5 +675,7 @@ describe("OAuth authorization decision", () => {
     ]);
     expect(JSON.stringify(store.createdCodes)).not.toContain(code);
     expect(await store.consumeTransaction(form.transactionId)).toBeNull();
+    store.advanceBy(600_000);
+    expect(await store.getClient(client.clientId)).not.toBeNull();
   });
 });

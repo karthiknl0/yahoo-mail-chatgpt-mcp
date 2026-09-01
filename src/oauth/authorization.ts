@@ -304,7 +304,7 @@ export function authorizationRouter(
 
         await store.releaseRateLimit(failureKeys, reservationId);
         const code = randomToken();
-        await store.createAuthorizationCode(
+        const promotion = await store.promoteClientAndCreateAuthorizationCode(
           sha256Token(code),
           {
             clientId: transaction.clientId,
@@ -315,6 +315,13 @@ export function authorizationRouter(
           },
           AUTHORIZATION_CODE_TTL_SECONDS,
         );
+        if (promotion.status === "storage_error") {
+          throw new Error("OAuth client promotion failed");
+        }
+        if (promotion.status !== "promoted") {
+          res.status(400).json({ error: "invalid_request" });
+          return;
+        }
         redirectWithParameters(res, transaction.redirectUri, {
           code,
           state: transaction.state,

@@ -4,6 +4,7 @@ import type {
   AuthorizationTransaction,
   ExchangeAuthorizationCodeInput,
   ExchangeAuthorizationCodeResult,
+  PromoteClientAndCreateAuthorizationCodeResult,
   RefreshTokenRecord,
   RegisteredClient,
   RotateRefreshTokenInput,
@@ -12,6 +13,8 @@ import type {
 
 /** One refresh-token lifetime keeps stale public registrations bounded. */
 export const CLIENT_REGISTRATION_RETENTION_SECONDS = 30 * 24 * 60 * 60;
+/** Owner approval is required before a public registration survives ten minutes. */
+export const CLIENT_PROVISIONAL_RETENTION_SECONDS = 10 * 60;
 /** 32 maximum-size public records consume about 1 MiB of Key Value storage. */
 export const MAX_ACTIVE_OAUTH_CLIENTS = 32;
 
@@ -22,6 +25,11 @@ export interface OAuthStore {
     maxActiveClients?: number,
   ): Promise<boolean>;
   getClient(clientId: string): Promise<RegisteredClient | null>;
+  promoteClientAndCreateAuthorizationCode(
+    digest: string,
+    value: AuthorizationCodeRecord,
+    codeTtlSeconds: number,
+  ): Promise<PromoteClientAndCreateAuthorizationCodeResult>;
   createTransaction(
     id: string,
     value: AuthorizationTransaction,

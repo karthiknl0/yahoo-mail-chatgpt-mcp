@@ -9,7 +9,7 @@ import {
 import { z } from "zod/v4";
 import type { AppConfig } from "../config.js";
 import {
-  CLIENT_REGISTRATION_RETENTION_SECONDS,
+  CLIENT_PROVISIONAL_RETENTION_SECONDS,
   MAX_ACTIVE_OAUTH_CLIENTS,
   type OAuthStore,
 } from "./store.js";
@@ -149,7 +149,7 @@ export function registrationRouter(
         const client = toRegisteredClient(parsed.data);
         const registered = await store.registerClient(
           client,
-          CLIENT_REGISTRATION_RETENTION_SECONDS,
+          CLIENT_PROVISIONAL_RETENTION_SECONDS,
           MAX_ACTIVE_OAUTH_CLIENTS,
         );
         if (!registered) {

@@ -80,6 +80,69 @@ function registeredClient(clientId: string): RegisteredClient {
 }
 
 describe("OAuth store contract", () => {
+  it("promotes a provisional client and issues its authorization code together", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.registerClient(registeredClient("client-1"), 600, 1);
+
+    expect(
+      await store.promoteClientAndCreateAuthorizationCode(
+        "promoted-code",
+        authorizationCode,
+        300,
+      ),
+    ).toEqual({ status: "promoted" });
+    expect(await store.consumeAuthorizationCode("promoted-code")).toEqual(
+      authorizationCode,
+    );
+    store.advanceBy(600_000);
+    expect(await store.getClient("client-1")).not.toBeNull();
+    expect(
+      await store.registerClient(registeredClient("client-2"), 600, 1),
+    ).toBe(false);
+  });
+
+  it("fails closed when a provisional client expires before promotion", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.registerClient(registeredClient("client-1"), 600, 1);
+    store.advanceBy(600_000);
+
+    expect(
+      await store.promoteClientAndCreateAuthorizationCode(
+        "expired-client-code",
+        authorizationCode,
+        300,
+      ),
+    ).toEqual({ status: "missing" });
+    expect(
+      await store.consumeAuthorizationCode("expired-client-code"),
+    ).toBeNull();
+  });
+
+  it("allows only one concurrent promotion for a code digest", async () => {
+    const store = new InMemoryOAuthStore(1_700_000_000_000);
+    await store.registerClient(registeredClient("client-1"), 600, 1);
+
+    const results = await Promise.all([
+      store.promoteClientAndCreateAuthorizationCode(
+        "promotion-race-code",
+        authorizationCode,
+        300,
+      ),
+      store.promoteClientAndCreateAuthorizationCode(
+        "promotion-race-code",
+        authorizationCode,
+        300,
+      ),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === "promoted"),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "collision"),
+    ).toHaveLength(1);
+  });
+
   it("expires registered clients and frees the active-client cap", async () => {
     const store = new InMemoryOAuthStore(1_700_000_000_000);
     const first = registeredClient("client-1");
@@ -609,6 +672,32 @@ function redisStore(fake: StrictFakeRedisClient): RedisOAuthStore {
 }
 
 describe("RedisOAuthStore command boundaries", () => {
+  it("promotes a client and creates its code in one Lua command", async () => {
+    const fake = new StrictFakeRedisClient();
+    fake.evalReply = "promoted";
+    const store = redisStore(fake);
+
+    expect(
+      await store.promoteClientAndCreateAuthorizationCode(
+        "promoted-code",
+        authorizationCode,
+        300,
+      ),
+    ).toEqual({ status: "promoted" });
+    expect(fake.calls).toEqual([
+      {
+        method: "eval",
+        keys: ["client-active", "client:client-1", "code:promoted-code"],
+        arguments: [
+          JSON.stringify(authorizationCode),
+          "300",
+          "2592000",
+          "client-1",
+        ],
+      },
+    ]);
+  });
+
   it("retains registered clients with an atomic global cap", async () => {
     const fake = new StrictFakeRedisClient();
     const store = redisStore(fake);

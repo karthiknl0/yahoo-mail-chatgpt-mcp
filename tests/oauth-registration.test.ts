@@ -71,6 +71,35 @@ describe("dynamic client registration", () => {
     expect(first.body.client_id).not.toBe(second.body.client_id);
   });
 
+  it("expires unapproved public registrations after ten minutes", async () => {
+    const { app, store } = createTestApp();
+    const response = await request(app).post("/register").send(publicClient);
+
+    store.advanceBy(10 * 60 * 1_000);
+    expect(await store.getClient(response.body.client_id)).toBeNull();
+  });
+
+  it("recovers every client slot after provisional registrations expire", async () => {
+    const { app, store } = createTestApp();
+    const initial = await Promise.all(
+      Array.from({ length: 32 }, (_, index) =>
+        request(app)
+          .post("/register")
+          .set("X-Forwarded-For", `198.51.100.${index + 1}`)
+          .send(publicClient),
+      ),
+    );
+    expect(initial.every((response) => response.status === 201)).toBe(true);
+
+    store.advanceBy(10 * 60 * 1_000);
+    const recovered = await request(app)
+      .post("/register")
+      .set("X-Forwarded-For", "198.51.100.200")
+      .send(publicClient);
+
+    expect(recovered.status).toBe(201);
+  });
+
   it("returns a transient error when the durable client cap is full", async () => {
     const store = new InMemoryOAuthStore();
     for (let index = 0; index < 32; index += 1) {

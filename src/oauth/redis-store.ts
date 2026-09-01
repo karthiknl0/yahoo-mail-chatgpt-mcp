@@ -10,6 +10,7 @@ import type {
   AuthorizationTransaction,
   ExchangeAuthorizationCodeInput,
   ExchangeAuthorizationCodeResult,
+  PromoteClientAndCreateAuthorizationCodeResult,
   RefreshTokenRecord,
   RegisteredClient,
   RotateRefreshTokenInput,
@@ -46,6 +47,56 @@ if redis.call('PTTL', KEYS[1]) < retentionMillis then
   redis.call('PEXPIRE', KEYS[1], retentionMillis)
 end
 return 1
+`;
+
+const PROMOTE_CLIENT_AND_CREATE_CODE_SCRIPT = `
+local function result(status)
+  return status
+end
+
+local clientJson = redis.call('GET', KEYS[2])
+if not clientJson then
+  return result('missing')
+end
+if redis.call('EXISTS', KEYS[3]) == 1 then
+  return result('collision')
+end
+
+local previousTtl = redis.call('PTTL', KEYS[2])
+if previousTtl <= 0 then
+  redis.call('DEL', KEYS[2])
+  redis.call('ZREM', KEYS[1], ARGV[4])
+  return result('missing')
+end
+
+local codeStored = redis.pcall('SET', KEYS[3], ARGV[1], 'EX', tonumber(ARGV[2]), 'NX')
+if type(codeStored) == 'table' and codeStored.err then
+  return result('storage_error')
+end
+if not codeStored then
+  return result('collision')
+end
+
+local promoted = redis.pcall('SET', KEYS[2], clientJson, 'EX', tonumber(ARGV[3]))
+if type(promoted) == 'table' and promoted.err then
+  redis.call('DEL', KEYS[3])
+  return result('storage_error')
+end
+
+local redisTime = redis.call('TIME')
+local nowMillis = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', nowMillis)
+local indexed = redis.pcall('ZADD', KEYS[1], nowMillis + tonumber(ARGV[3]) * 1000, ARGV[4])
+if type(indexed) == 'table' and indexed.err then
+  redis.call('SET', KEYS[2], clientJson, 'PX', previousTtl)
+  redis.call('ZADD', KEYS[1], nowMillis + previousTtl, ARGV[4])
+  redis.call('DEL', KEYS[3])
+  return result('storage_error')
+end
+if redis.call('PTTL', KEYS[1]) < tonumber(ARGV[3]) * 1000 then
+  redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]) * 1000)
+end
+return result('promoted')
 `;
 
 const EXCHANGE_AUTHORIZATION_CODE_SCRIPT = `
@@ -390,6 +441,20 @@ function parseCodeExchangeResult(
   throw new Error("Unexpected OAuth code exchange result");
 }
 
+function parsePromotionResult(
+  value: unknown,
+): PromoteClientAndCreateAuthorizationCodeResult {
+  if (
+    value === "promoted" ||
+    value === "missing" ||
+    value === "collision" ||
+    value === "storage_error"
+  ) {
+    return { status: value };
+  }
+  throw new Error("Unexpected OAuth client promotion result");
+}
+
 function parseRotationResult(value: unknown): RotateRefreshTokenResult {
   if (typeof value !== "string") {
     throw new Error("Unexpected OAuth refresh rotation result");
@@ -447,6 +512,27 @@ export class RedisOAuthStore implements OAuthStore {
     return deserialize<RegisteredClient>(
       await this.client.get(`client:${clientId}`),
     );
+  }
+
+  async promoteClientAndCreateAuthorizationCode(
+    digest: string,
+    value: AuthorizationCodeRecord,
+    codeTtlSeconds: number,
+  ): Promise<PromoteClientAndCreateAuthorizationCodeResult> {
+    assertTtl(codeTtlSeconds);
+    const result = await this.client.eval(
+      PROMOTE_CLIENT_AND_CREATE_CODE_SCRIPT,
+      {
+        keys: ["client-active", `client:${value.clientId}`, `code:${digest}`],
+        arguments: [
+          serialize(value),
+          String(codeTtlSeconds),
+          String(CLIENT_REGISTRATION_RETENTION_SECONDS),
+          value.clientId,
+        ],
+      },
+    );
+    return parsePromotionResult(result);
   }
 
   async createTransaction(

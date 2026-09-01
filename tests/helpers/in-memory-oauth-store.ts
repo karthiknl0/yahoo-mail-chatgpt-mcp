@@ -9,6 +9,7 @@ import type {
   AuthorizationTransaction,
   ExchangeAuthorizationCodeInput,
   ExchangeAuthorizationCodeResult,
+  PromoteClientAndCreateAuthorizationCodeResult,
   RefreshTokenRecord,
   RegisteredClient,
   RotateRefreshTokenInput,
@@ -94,6 +95,24 @@ export class InMemoryOAuthStore implements OAuthStore {
 
   async getClient(clientId: string): Promise<RegisteredClient | null> {
     return this.read(this.clients, clientId);
+  }
+
+  async promoteClientAndCreateAuthorizationCode(
+    digest: string,
+    value: AuthorizationCodeRecord,
+    codeTtlSeconds: number,
+  ): Promise<PromoteClientAndCreateAuthorizationCodeResult> {
+    const client = this.read(this.clients, value.clientId);
+    if (client === null) return { status: "missing" };
+    if (this.read(this.authorizationCodes, digest)) {
+      return { status: "collision" };
+    }
+    this.authorizationCodes.set(digest, this.expiring(value, codeTtlSeconds));
+    this.clients.set(
+      value.clientId,
+      this.expiring(client, CLIENT_REGISTRATION_RETENTION_SECONDS),
+    );
+    return { status: "promoted" };
   }
 
   async createTransaction(
