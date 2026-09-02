@@ -15,6 +15,7 @@ const envSchema = z.object({
   IMAP_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(15000),
   IMAP_COMMAND_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(20000),
   TRUST_PROXY: z.coerce.number().int().min(0).max(10).default(0),
+  PUBLIC_URL: z.string().url().optional(),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -53,5 +54,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     imapConnectTimeoutMs: parsed.IMAP_CONNECT_TIMEOUT_MS,
     imapCommandTimeoutMs: parsed.IMAP_COMMAND_TIMEOUT_MS,
     trustProxy: parsed.TRUST_PROXY,
+    publicUrl:
+      parsed.PUBLIC_URL ??
+      `http://${parsed.HOST === '0.0.0.0' ? 'localhost' : parsed.HOST}:${parsed.PORT}`,
   } as const;
 }

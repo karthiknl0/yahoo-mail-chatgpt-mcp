@@ -7,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import { loadConfig } from './config.js';
 import { createYahooMcpServer } from './mcp.js';
+import { createOAuthRouter } from './oauth.js';
 import { bearerAuth } from './security/auth.js';
 
 const config = loadConfig();
@@ -34,6 +35,9 @@ app.use(
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok' });
 });
+
+// OAuth 2.0 endpoints — must be before the bearer-gated /mcp route.
+app.use(createOAuthRouter(config.publicUrl, config.mcpApiToken));
 
 const limiter = rateLimit({
   windowMs: 60_000,
