@@ -15,7 +15,7 @@ function classify(mail: SafeMailSummary): string {
 function score(mail: SafeMailSummary): number {
   const category = classify(mail);
   let value = mail.unread ? 2 : 0;
-  if (category === 'security') value += 6;
+  if (category === 'security') value -= 4;
   if (category === 'finance') value += 4;
   if (category === 'schedule') value += 3;
   if (category === 'technology') value += 2;

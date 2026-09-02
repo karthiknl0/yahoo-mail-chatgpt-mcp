@@ -14,6 +14,7 @@ const envSchema = z.object({
   MAX_READ_CHARS: z.coerce.number().int().min(500).max(20000).default(5000),
   IMAP_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(15000),
   IMAP_COMMAND_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(20000),
+  TRUST_PROXY: z.coerce.number().int().min(0).max(10).default(0),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -51,5 +52,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     maxReadChars: parsed.MAX_READ_CHARS,
     imapConnectTimeoutMs: parsed.IMAP_CONNECT_TIMEOUT_MS,
     imapCommandTimeoutMs: parsed.IMAP_COMMAND_TIMEOUT_MS,
+    trustProxy: parsed.TRUST_PROXY,
   } as const;
 }

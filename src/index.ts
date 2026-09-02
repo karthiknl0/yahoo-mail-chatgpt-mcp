@@ -23,6 +23,7 @@ const app = createMcpExpressApp({
 });
 
 app.disable('x-powered-by');
+app.set('trust proxy', config.trustProxy);
 app.use(
   helmet({
     contentSecurityPolicy: false,
@@ -42,14 +43,27 @@ const limiter = rateLimit({
   message: { error: 'rate_limited' },
 });
 
+const BODY_LIMIT = 256 * 1024;
+const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
+
 function enforceBodyLimit(req: Request, res: Response, next: NextFunction): void {
+  if (!BODY_METHODS.has(req.method)) {
+    next();
+    return;
+  }
   const raw = req.get('content-length');
-  if (raw) {
-    const length = Number(raw);
-    if (Number.isFinite(length) && length > 256 * 1024) {
-      res.status(413).json({ error: 'request_too_large' });
-      return;
-    }
+  if (!raw) {
+    res.status(411).json({ error: 'length_required' });
+    return;
+  }
+  const length = Number(raw);
+  if (!Number.isFinite(length) || length < 0) {
+    res.status(400).json({ error: 'bad_content_length' });
+    return;
+  }
+  if (length > BODY_LIMIT) {
+    res.status(413).json({ error: 'request_too_large' });
+    return;
   }
   next();
 }
