@@ -149,5 +149,97 @@ export function createYahooMcpServer(config: AppConfig): McpServer {
     async ({ account }) => toolResult(await reader.listFolders(resolveAccount(config, account))),
   );
 
+  const uidsParam = z.array(z.number().int().positive()).min(1).max(50).describe('Array of email UIDs');
+  const folderParam = z.string().min(1).max(200).default('INBOX');
+
+  server.registerTool(
+    'mark_as_read',
+    {
+      description: 'Mark emails as read by UID.',
+      inputSchema: z.object({ account: accountParam, uids: uidsParam, folder: folderParam }),
+    },
+    async ({ account, uids, folder }) => {
+      await reader.markAsRead(uids, folder, resolveAccount(config, account));
+      return toolResult({ ok: true, uids });
+    },
+  );
+
+  server.registerTool(
+    'mark_as_unread',
+    {
+      description: 'Mark emails as unread by UID.',
+      inputSchema: z.object({ account: accountParam, uids: uidsParam, folder: folderParam }),
+    },
+    async ({ account, uids, folder }) => {
+      await reader.markAsUnread(uids, folder, resolveAccount(config, account));
+      return toolResult({ ok: true, uids });
+    },
+  );
+
+  server.registerTool(
+    'flag_emails',
+    {
+      description: 'Flag (star) emails as important by UID.',
+      inputSchema: z.object({ account: accountParam, uids: uidsParam, folder: folderParam }),
+    },
+    async ({ account, uids, folder }) => {
+      await reader.flagEmails(uids, folder, resolveAccount(config, account));
+      return toolResult({ ok: true, uids });
+    },
+  );
+
+  server.registerTool(
+    'unflag_emails',
+    {
+      description: 'Remove flag/star from emails by UID.',
+      inputSchema: z.object({ account: accountParam, uids: uidsParam, folder: folderParam }),
+    },
+    async ({ account, uids, folder }) => {
+      await reader.unflagEmails(uids, folder, resolveAccount(config, account));
+      return toolResult({ ok: true, uids });
+    },
+  );
+
+  server.registerTool(
+    'move_emails',
+    {
+      description: 'Move emails to a specified folder by UID. Use list_folders to see available folder names.',
+      inputSchema: z.object({
+        account: accountParam,
+        uids: uidsParam,
+        destination: z.string().min(1).max(200).describe('Destination folder name'),
+        folder: folderParam,
+      }),
+    },
+    async ({ account, uids, destination, folder }) => {
+      await reader.moveEmails(uids, destination, folder, resolveAccount(config, account));
+      return toolResult({ ok: true, uids, destination });
+    },
+  );
+
+  server.registerTool(
+    'delete_emails',
+    {
+      description: 'Move emails to Trash by UID (soft delete, recoverable).',
+      inputSchema: z.object({ account: accountParam, uids: uidsParam, folder: folderParam }),
+    },
+    async ({ account, uids, folder }) => {
+      await reader.deleteEmails(uids, folder, resolveAccount(config, account));
+      return toolResult({ ok: true, uids, movedTo: 'Trash' });
+    },
+  );
+
+  server.registerTool(
+    'archive_emails',
+    {
+      description: 'Move emails to Archive by UID.',
+      inputSchema: z.object({ account: accountParam, uids: uidsParam, folder: folderParam }),
+    },
+    async ({ account, uids, folder }) => {
+      await reader.archiveEmails(uids, folder, resolveAccount(config, account));
+      return toolResult({ ok: true, uids, movedTo: 'Archive' });
+    },
+  );
+
   return server;
 }

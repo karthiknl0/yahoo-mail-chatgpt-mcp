@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { createMcpExpressApp } from '@modelcontextprotocol/express';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler } from '@modelcontextprotocol/server';
+import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import type { ParsedQs } from 'qs';
 import rateLimit from 'express-rate-limit';
@@ -34,6 +35,13 @@ app.use(
     crossOriginResourcePolicy: false,
   }),
 );
+app.use((req, _res, next) => {
+  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+    express.json({ limit: '16kb' })(req, _res, next);
+  } else {
+    next();
+  }
+});
 
 const limiter = rateLimit({
   windowMs: 60_000,
@@ -136,6 +144,90 @@ app.get('/openapi.json', (_req, res) => {
           responses: { '200': { description: 'Folder names' } },
         },
       },
+      '/api/emails/mark-read': {
+        post: {
+          operationId: 'markAsRead',
+          summary: 'Mark emails as read by UID',
+          parameters: [
+            { name: 'account', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+            { name: 'folder', in: 'query', schema: { type: 'string', default: 'INBOX' } },
+          ],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['uids'], properties: { uids: { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 } } } } } },
+          responses: { '200': { description: 'ok' } },
+        },
+      },
+      '/api/emails/mark-unread': {
+        post: {
+          operationId: 'markAsUnread',
+          summary: 'Mark emails as unread by UID',
+          parameters: [
+            { name: 'account', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+            { name: 'folder', in: 'query', schema: { type: 'string', default: 'INBOX' } },
+          ],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['uids'], properties: { uids: { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 } } } } } },
+          responses: { '200': { description: 'ok' } },
+        },
+      },
+      '/api/emails/flag': {
+        post: {
+          operationId: 'flagEmails',
+          summary: 'Flag (star) emails as important by UID',
+          parameters: [
+            { name: 'account', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+            { name: 'folder', in: 'query', schema: { type: 'string', default: 'INBOX' } },
+          ],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['uids'], properties: { uids: { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 } } } } } },
+          responses: { '200': { description: 'ok' } },
+        },
+      },
+      '/api/emails/unflag': {
+        post: {
+          operationId: 'unflagEmails',
+          summary: 'Remove flag/star from emails by UID',
+          parameters: [
+            { name: 'account', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+            { name: 'folder', in: 'query', schema: { type: 'string', default: 'INBOX' } },
+          ],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['uids'], properties: { uids: { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 } } } } } },
+          responses: { '200': { description: 'ok' } },
+        },
+      },
+      '/api/emails/move': {
+        post: {
+          operationId: 'moveEmails',
+          summary: 'Move emails to a folder by UID — use listFolders to see available folder names',
+          parameters: [
+            { name: 'account', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+            { name: 'folder', in: 'query', schema: { type: 'string', default: 'INBOX' } },
+          ],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['uids', 'destination'], properties: { uids: { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 }, destination: { type: 'string' } } } } } },
+          responses: { '200': { description: 'ok' } },
+        },
+      },
+      '/api/emails/delete': {
+        post: {
+          operationId: 'deleteEmails',
+          summary: 'Move emails to Trash by UID (soft delete, recoverable)',
+          parameters: [
+            { name: 'account', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+            { name: 'folder', in: 'query', schema: { type: 'string', default: 'INBOX' } },
+          ],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['uids'], properties: { uids: { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 } } } } } },
+          responses: { '200': { description: 'ok' } },
+        },
+      },
+      '/api/emails/archive': {
+        post: {
+          operationId: 'archiveEmails',
+          summary: 'Move emails to Archive by UID',
+          parameters: [
+            { name: 'account', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+            { name: 'folder', in: 'query', schema: { type: 'string', default: 'INBOX' } },
+          ],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['uids'], properties: { uids: { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 } } } } } },
+          responses: { '200': { description: 'ok' } },
+        },
+      },
     },
     components: { schemas: {} },
   });
@@ -201,6 +293,80 @@ app.get('/api/folders', limiter, bearerAuth(config.mcpApiToken), async (req, res
 
 app.get('/api/accounts', limiter, bearerAuth(config.mcpApiToken), (_req, res) => {
   res.json(config.accounts.map((a, i) => ({ account: i + 1, email: a.email })));
+});
+
+function parseUids(body: unknown): number[] | null {
+  if (!body || typeof body !== 'object') return null;
+  const raw = (body as Record<string, unknown>).uids;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 50) return null;
+  const nums = raw.map(Number);
+  if (nums.some((n) => !Number.isInteger(n) || n <= 0)) return null;
+  return nums;
+}
+
+app.post('/api/emails/mark-read', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+  const uids = parseUids(req.body);
+  if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
+  const account = resolveAccount(req.query);
+  const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
+  await reader.markAsRead(uids, folder, account);
+  res.json({ ok: true, uids });
+});
+
+app.post('/api/emails/mark-unread', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+  const uids = parseUids(req.body);
+  if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
+  const account = resolveAccount(req.query);
+  const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
+  await reader.markAsUnread(uids, folder, account);
+  res.json({ ok: true, uids });
+});
+
+app.post('/api/emails/flag', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+  const uids = parseUids(req.body);
+  if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
+  const account = resolveAccount(req.query);
+  const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
+  await reader.flagEmails(uids, folder, account);
+  res.json({ ok: true, uids });
+});
+
+app.post('/api/emails/unflag', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+  const uids = parseUids(req.body);
+  if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
+  const account = resolveAccount(req.query);
+  const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
+  await reader.unflagEmails(uids, folder, account);
+  res.json({ ok: true, uids });
+});
+
+app.post('/api/emails/move', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+  const uids = parseUids(req.body);
+  if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
+  const destination = String((req.body as Record<string, unknown>)?.destination ?? '').slice(0, 200);
+  if (!destination) { res.status(400).json({ error: 'destination folder required' }); return; }
+  const account = resolveAccount(req.query);
+  const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
+  await reader.moveEmails(uids, destination, folder, account);
+  res.json({ ok: true, uids, destination });
+});
+
+app.post('/api/emails/delete', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+  const uids = parseUids(req.body);
+  if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
+  const account = resolveAccount(req.query);
+  const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
+  await reader.deleteEmails(uids, folder, account);
+  res.json({ ok: true, uids, movedTo: 'Trash' });
+});
+
+app.post('/api/emails/archive', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+  const uids = parseUids(req.body);
+  if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
+  const account = resolveAccount(req.query);
+  const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
+  await reader.archiveEmails(uids, folder, account);
+  res.json({ ok: true, uids, movedTo: 'Archive' });
 });
 
 // Single endpoint returning emails from ALL accounts — avoids GPT needing to loop

@@ -79,11 +79,11 @@ async function toSummary(
 export class YahooMailReader {
   constructor(private readonly config: AppConfig) {}
 
-  private async withMailbox<T>(folder: string, fn: (client: ImapFlow) => Promise<T>, account?: { email: string; password: string } | undefined): Promise<T> {
+  private async withMailbox<T>(folder: string, fn: (client: ImapFlow) => Promise<T>, account?: { email: string; password: string } | undefined, readOnly = true): Promise<T> {
     const client = makeClient(this.config, account);
     try {
       await client.connect();
-      await client.mailboxOpen(folder, { readOnly: true });
+      await client.mailboxOpen(folder, { readOnly });
       return await fn(client);
     } finally {
       try {
@@ -161,5 +161,48 @@ export class YahooMailReader {
         body: truncateSanitized(text, this.config.maxReadChars),
       };
     }, account);
+  }
+
+  async markAsRead(uids: number[], folder = 'INBOX', account?: { email: string; password: string }): Promise<void> {
+    const seq = uids.join(',');
+    await this.withMailbox(folder, async (client) => {
+      await client.messageFlagsAdd(seq, ['\\Seen'], { uid: true });
+    }, account, false);
+  }
+
+  async markAsUnread(uids: number[], folder = 'INBOX', account?: { email: string; password: string }): Promise<void> {
+    const seq = uids.join(',');
+    await this.withMailbox(folder, async (client) => {
+      await client.messageFlagsRemove(seq, ['\\Seen'], { uid: true });
+    }, account, false);
+  }
+
+  async flagEmails(uids: number[], folder = 'INBOX', account?: { email: string; password: string }): Promise<void> {
+    const seq = uids.join(',');
+    await this.withMailbox(folder, async (client) => {
+      await client.messageFlagsAdd(seq, ['\\Flagged'], { uid: true });
+    }, account, false);
+  }
+
+  async unflagEmails(uids: number[], folder = 'INBOX', account?: { email: string; password: string }): Promise<void> {
+    const seq = uids.join(',');
+    await this.withMailbox(folder, async (client) => {
+      await client.messageFlagsRemove(seq, ['\\Flagged'], { uid: true });
+    }, account, false);
+  }
+
+  async moveEmails(uids: number[], destination: string, folder = 'INBOX', account?: { email: string; password: string }): Promise<void> {
+    const seq = uids.join(',');
+    await this.withMailbox(folder, async (client) => {
+      await client.messageMove(seq, destination, { uid: true });
+    }, account, false);
+  }
+
+  async deleteEmails(uids: number[], folder = 'INBOX', account?: { email: string; password: string }): Promise<void> {
+    return this.moveEmails(uids, 'Trash', folder, account);
+  }
+
+  async archiveEmails(uids: number[], folder = 'INBOX', account?: { email: string; password: string }): Promise<void> {
+    return this.moveEmails(uids, 'Archive', folder, account);
   }
 }
