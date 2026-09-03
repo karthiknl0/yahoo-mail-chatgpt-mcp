@@ -4,6 +4,10 @@ import { z } from 'zod/v4';
 const envSchema = z.object({
   YAHOO_EMAIL: z.string().email(),
   YAHOO_APP_PASSWORD: z.string().min(8),
+  YAHOO_EMAIL_2: z.string().email().optional(),
+  YAHOO_APP_PASSWORD_2: z.string().min(8).optional(),
+  YAHOO_EMAIL_3: z.string().email().optional(),
+  YAHOO_APP_PASSWORD_3: z.string().min(8).optional(),
   MCP_API_TOKEN: z.string().min(32),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().min(1).default('127.0.0.1'),
@@ -40,9 +44,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     throw new Error('ALLOWED_HOSTS is required when binding to 0.0.0.0');
   }
 
+  const accounts: { email: string; password: string }[] = [
+    { email: parsed.YAHOO_EMAIL, password: parsed.YAHOO_APP_PASSWORD },
+  ];
+  if (parsed.YAHOO_EMAIL_2 && parsed.YAHOO_APP_PASSWORD_2)
+    accounts.push({ email: parsed.YAHOO_EMAIL_2, password: parsed.YAHOO_APP_PASSWORD_2 });
+  if (parsed.YAHOO_EMAIL_3 && parsed.YAHOO_APP_PASSWORD_3)
+    accounts.push({ email: parsed.YAHOO_EMAIL_3, password: parsed.YAHOO_APP_PASSWORD_3 });
+
   return {
     yahooEmail: parsed.YAHOO_EMAIL,
     yahooAppPassword: parsed.YAHOO_APP_PASSWORD,
+    accounts,
     mcpApiToken: parsed.MCP_API_TOKEN,
     port: parsed.PORT,
     host: parsed.HOST,

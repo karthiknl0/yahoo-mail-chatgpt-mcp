@@ -19,14 +19,14 @@ export interface SafeMailDetail extends SafeMailSummary {
   body: string;
 }
 
-function makeClient(config: AppConfig): ImapFlow {
+function makeClient(config: AppConfig, account?: { email: string; password: string }): ImapFlow {
   return new ImapFlow({
     host: 'imap.mail.yahoo.com',
     port: 993,
     secure: true,
     auth: {
-      user: config.yahooEmail,
-      pass: config.yahooAppPassword,
+      user: account?.email ?? config.yahooEmail,
+      pass: account?.password ?? config.yahooAppPassword,
     },
     logger: false,
     tls: {
@@ -79,8 +79,8 @@ async function toSummary(
 export class YahooMailReader {
   constructor(private readonly config: AppConfig) {}
 
-  private async withMailbox<T>(folder: string, fn: (client: ImapFlow) => Promise<T>): Promise<T> {
-    const client = makeClient(this.config);
+  private async withMailbox<T>(folder: string, fn: (client: ImapFlow) => Promise<T>, account?: { email: string; password: string } | undefined): Promise<T> {
+    const client = makeClient(this.config, account);
     try {
       await client.connect();
       await client.mailboxOpen(folder, { readOnly: true });
@@ -94,8 +94,8 @@ export class YahooMailReader {
     }
   }
 
-  async listFolders(): Promise<string[]> {
-    const client = makeClient(this.config);
+  async listFolders(account?: { email: string; password: string } | undefined): Promise<string[]> {
+    const client = makeClient(this.config, account);
     try {
       await client.connect();
       const folders = await client.list();
@@ -115,6 +115,7 @@ export class YahooMailReader {
     unreadOnly?: boolean;
     since?: Date;
     query?: string;
+    account?: { email: string; password: string } | undefined;
   }): Promise<SafeMailSummary[]> {
     const folder = options.folder ?? 'INBOX';
     const limit = Math.min(options.limit ?? 10, this.config.maxEmailsPerRequest);
@@ -140,10 +141,10 @@ export class YahooMailReader {
       }
 
       return results;
-    });
+    }, options.account);
   }
 
-  async readEmail(uid: number, folder = 'INBOX'): Promise<SafeMailDetail | null> {
+  async readEmail(uid: number, folder = 'INBOX', account?: { email: string; password: string } | undefined): Promise<SafeMailDetail | null> {
     return this.withMailbox(folder, async (client) => {
       const message = await client.fetchOne(
         uid,
@@ -159,6 +160,6 @@ export class YahooMailReader {
         ...summary,
         body: truncateSanitized(text, this.config.maxReadChars),
       };
-    });
+    }, account);
   }
 }
