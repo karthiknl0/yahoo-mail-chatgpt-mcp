@@ -113,6 +113,19 @@ app.get('/openapi.json', (_req, res) => {
           responses: { '200': { description: 'Sanitized email detail' } },
         },
       },
+      '/api/all-accounts/emails': {
+        get: {
+          operationId: 'listAllAccountsEmails',
+          summary: 'List emails from ALL 3 Yahoo accounts in a single call — use this when the user asks for emails from all accounts or all linked mails',
+          parameters: [
+            { name: 'folder', in: 'query', schema: { type: 'string', default: 'INBOX' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 25, default: 5 }, description: 'Emails per account' },
+            { name: 'unreadOnly', in: 'query', schema: { type: 'boolean', default: false } },
+            { name: 'hours', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 8760 } },
+          ],
+          responses: { '200': { description: 'Array of { accountNumber, accountEmail, emails[] } for each account' } },
+        },
+      },
       '/api/folders': {
         get: {
           operationId: 'listFolders',
@@ -188,6 +201,30 @@ app.get('/api/folders', limiter, bearerAuth(config.mcpApiToken), async (req, res
 
 app.get('/api/accounts', limiter, bearerAuth(config.mcpApiToken), (_req, res) => {
   res.json(config.accounts.map((a, i) => ({ account: i + 1, email: a.email })));
+});
+
+// Single endpoint returning emails from ALL accounts — avoids GPT needing to loop
+app.get('/api/all-accounts/emails', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+  const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
+  const limitPerAccount = Math.min(Math.max(Number(req.query.limit) || 5, 1), config.maxEmailsPerRequest);
+  const unreadOnly = req.query.unreadOnly === 'true';
+  const hours = req.query.hours ? Math.min(Math.max(Number(req.query.hours), 1), 8760) : undefined;
+  const since = hours ? new Date(Date.now() - hours * 60 * 60 * 1000) : undefined;
+
+  const results = await Promise.allSettled(
+    config.accounts.map(async (account, i) => {
+      const emails = await reader.listEmails({ folder, limit: limitPerAccount, unreadOnly, account, ...(since ? { since } : {}) });
+      return { accountNumber: i + 1, accountEmail: account.email, emails: emails.map((m) => ({ ...m, securityNotice: SECURITY_NOTICE })) };
+    }),
+  );
+
+  res.json(
+    results.map((r, i) =>
+      r.status === 'fulfilled'
+        ? r.value
+        : { accountNumber: i + 1, accountEmail: config.accounts[i]?.email, error: 'fetch_failed', emails: [] },
+    ),
+  );
 });
 
 // OAuth 2.0 endpoints — must be before the bearer-gated /mcp route.
