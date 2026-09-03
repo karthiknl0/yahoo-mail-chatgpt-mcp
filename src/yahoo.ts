@@ -1,7 +1,7 @@
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import type { AppConfig } from './config.js';
-import { truncateSanitized } from './security/redact.js';
+import { sanitizeHeader, truncateSanitized } from './security/redact.js';
 
 export interface SafeMailSummary {
   uid: number;
@@ -57,17 +57,18 @@ async function toSummary(
   message: FetchMessageObject,
   folder: string,
   maxPreviewChars: number,
+  preParsed?: Awaited<ReturnType<typeof simpleParser>>,
 ): Promise<SafeMailSummary> {
-  const parsed = message.source ? await simpleParser(message.source) : undefined;
+  const parsed = preParsed ?? (message.source ? await simpleParser(message.source) : undefined);
   const sender = firstAddress(message);
   const text = parsed?.text ?? parsed?.html?.toString() ?? '';
 
   return {
     uid: message.uid,
     folder,
-    senderName: sender.name,
+    senderName: sanitizeHeader(sender.name),
     senderEmail: sender.address,
-    subject: message.envelope?.subject ?? '(no subject)',
+    subject: sanitizeHeader(message.envelope?.subject ?? '(no subject)'),
     receivedAt: toIsoDate(message.internalDate ?? message.envelope?.date),
     unread: !message.flags?.has('\\Seen'),
     hasAttachments: (parsed?.attachments.length ?? 0) > 0,
@@ -151,8 +152,8 @@ export class YahooMailReader {
       );
       if (!message) return null;
 
-      const summary = await toSummary(message, folder, this.config.maxPreviewChars);
       const parsed = message.source ? await simpleParser(message.source) : undefined;
+      const summary = await toSummary(message, folder, this.config.maxPreviewChars, parsed);
       const text = parsed?.text ?? parsed?.html?.toString() ?? '';
       return {
         ...summary,

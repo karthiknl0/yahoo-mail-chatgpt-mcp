@@ -7,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import { loadConfig } from './config.js';
 import { createYahooMcpServer } from './mcp.js';
+import { createOAuthRouter } from './oauth.js';
 import { bearerAuth } from './security/auth.js';
 
 const config = loadConfig();
@@ -23,6 +24,7 @@ const app = createMcpExpressApp({
 });
 
 app.disable('x-powered-by');
+app.set('trust proxy', config.trustProxy);
 app.use(
   helmet({
     contentSecurityPolicy: false,
@@ -34,6 +36,9 @@ app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
+// OAuth 2.0 endpoints — must be before the bearer-gated /mcp route.
+app.use(createOAuthRouter(config.publicUrl, config.mcpApiToken));
+
 const limiter = rateLimit({
   windowMs: 60_000,
   limit: 60,
@@ -42,14 +47,27 @@ const limiter = rateLimit({
   message: { error: 'rate_limited' },
 });
 
+const BODY_LIMIT = 256 * 1024;
+const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
+
 function enforceBodyLimit(req: Request, res: Response, next: NextFunction): void {
+  if (!BODY_METHODS.has(req.method)) {
+    next();
+    return;
+  }
   const raw = req.get('content-length');
-  if (raw) {
-    const length = Number(raw);
-    if (Number.isFinite(length) && length > 256 * 1024) {
-      res.status(413).json({ error: 'request_too_large' });
-      return;
-    }
+  if (!raw) {
+    res.status(411).json({ error: 'length_required' });
+    return;
+  }
+  const length = Number(raw);
+  if (!Number.isFinite(length) || length < 0) {
+    res.status(400).json({ error: 'bad_content_length' });
+    return;
+  }
+  if (length > BODY_LIMIT) {
+    res.status(413).json({ error: 'request_too_large' });
+    return;
   }
   next();
 }

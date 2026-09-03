@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeEmailText, stripHtml, truncateSanitized } from '../src/security/redact.js';
+import { sanitizeEmailText, sanitizeHeader, stripHtml, truncateSanitized } from '../src/security/redact.js';
 
 describe('email redaction', () => {
   it('redacts contextual OTP codes', () => {
@@ -40,5 +40,34 @@ describe('email redaction', () => {
     const output = truncateSanitized(`OTP 123456 ${'x'.repeat(500)}`, 80);
     expect(output.length).toBeLessThanOrEqual(80);
     expect(output).not.toContain('123456');
+  });
+
+  it('redacts sign-in keyword contextual codes', () => {
+    expect(sanitizeEmailText('Confirm sign-in: 738104')).not.toContain('738104');
+    expect(sanitizeEmailText('sign-on attempt — code 291047')).not.toContain('291047');
+    expect(sanitizeEmailText('2FA code: 830192')).not.toContain('830192');
+  });
+
+  it('redacts mixed alphanumeric one-time codes near auth keywords', () => {
+    expect(sanitizeEmailText('Your one-time code: A9F2K1')).not.toContain('A9F2K1');
+    expect(sanitizeEmailText('verification token: B3X7YZ')).not.toContain('B3X7YZ');
+  });
+
+  it('redacts opaque magic-link path segments', () => {
+    const url = 'https://acct.example.com/r/9fJ2kQ8s';
+    expect(sanitizeEmailText(`Click here: ${url}`)).toContain('[REDACTED LINK]');
+    expect(sanitizeEmailText(`Click here: ${url}`)).not.toContain('9fJ2kQ8s');
+  });
+
+  it('redacts token-like URL query values', () => {
+    const url = 'https://example.com/u?t=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9';
+    expect(sanitizeEmailText(url)).toContain('[REDACTED LINK]');
+    expect(sanitizeEmailText(url)).not.toContain('eyJhbGci');
+  });
+
+  it('sanitizeHeader redacts OTP in subject and truncates long values', () => {
+    expect(sanitizeHeader('492811 is your verification code')).not.toContain('492811');
+    const long = 'x'.repeat(300);
+    expect(sanitizeHeader(long).length).toBeLessThanOrEqual(200);
   });
 });
