@@ -109,10 +109,7 @@ app.get('/openapi.json', (_req, res) => {
         },
       },
     },
-    components: {
-      securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } },
-    },
-    security: [{ bearerAuth: [] }],
+    components: { schemas: {} },
   });
 });
 
