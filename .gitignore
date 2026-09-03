@@ -9,3 +9,7 @@ coverage/
 .vscode/
 .idea/
 .worktrees/
+
+# VPS deployment files — kept local, deployed via SSH
+docker-compose.yml
+nginx.*
