@@ -28,6 +28,9 @@
     "helmet": "^8.1.0",
     "imapflow": "^1.0.195",
     "mailparser": "^3.7.4",
+    "mammoth": "^1.12.2",
+    "pdf-parse": "^2.4.5",
+    "xlsx": "^0.18.5",
     "zod": "^4.1.5"
   },
   "devDependencies": {
