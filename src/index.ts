@@ -24,7 +24,10 @@ const nodeHandler = toNodeHandler(handler);
 const app = createMcpExpressApp({
   host: config.host,
   allowedHosts: config.allowedHosts,
-  allowedOrigins: config.allowedOrigins,
+  // Only pass allowedOrigins when explicitly configured — an empty array is truthy
+  // and causes originValidation([]) to block every request including OAuth browser redirects.
+  // Bearer auth + HTTPS already secures all endpoints.
+  ...(config.allowedOrigins.length > 0 ? { allowedOrigins: config.allowedOrigins } : {}),
 });
 
 app.disable('x-powered-by');
