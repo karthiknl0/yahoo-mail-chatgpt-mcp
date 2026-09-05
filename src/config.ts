@@ -39,6 +39,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   }
 
   const parsed = result.data;
+  // An incomplete optional account must not silently disappear from all-account reads.
+  for (const suffix of ['2', '3'] as const) {
+    const emailKey = `YAHOO_EMAIL_${suffix}` as const;
+    const passwordKey = `YAHOO_APP_PASSWORD_${suffix}` as const;
+    if (Boolean(parsed[emailKey]) !== Boolean(parsed[passwordKey])) {
+      const missingKey = parsed[emailKey] ? passwordKey : emailKey;
+      throw new Error(`Invalid or missing required configuration: ${missingKey}`);
+    }
+  }
   const allowedHosts = splitCsv(parsed.ALLOWED_HOSTS);
   if (parsed.HOST === '0.0.0.0' && allowedHosts.length === 0) {
     throw new Error('ALLOWED_HOSTS is required when binding to 0.0.0.0');

@@ -14,6 +14,38 @@ function validEnv(): NodeJS.ProcessEnv {
 }
 
 describe('configuration', () => {
+  it.each([
+    ['YAHOO_EMAIL_2', 'second@example.com', 'YAHOO_APP_PASSWORD_2'],
+    ['YAHOO_APP_PASSWORD_2', 'private-password-two', 'YAHOO_EMAIL_2'],
+    ['YAHOO_EMAIL_3', 'third@example.com', 'YAHOO_APP_PASSWORD_3'],
+    ['YAHOO_APP_PASSWORD_3', 'private-password-three', 'YAHOO_EMAIL_3'],
+  ])('rejects incomplete account configuration: %s', (key, value, missingKey) => {
+    const configure = () => loadConfig({ ...validEnv(), [key]: value });
+    expect(configure).toThrow(missingKey);
+    try {
+      configure();
+    } catch (error) {
+      expect(String(error)).not.toContain(value);
+    }
+  });
+
+  it('includes all three fully configured accounts in order', () => {
+    const config = loadConfig({
+      ...validEnv(),
+      YAHOO_EMAIL_2: 'second@example.com',
+      YAHOO_APP_PASSWORD_2: 'private-password-two',
+      YAHOO_EMAIL_3: 'third@example.com',
+      YAHOO_APP_PASSWORD_3: 'private-password-three',
+    });
+    expect(config.accounts.map((account) => account.email)).toEqual([
+      'user@example.com', 'second@example.com', 'third@example.com',
+    ]);
+  });
+
+  it('allows a single account when additional credentials are absent', () => {
+    expect(loadConfig(validEnv()).accounts).toHaveLength(1);
+  });
+
   it('fails closed when required secrets are missing', () => {
     expect(() => loadConfig({})).toThrow(/Invalid or missing required configuration/);
   });
