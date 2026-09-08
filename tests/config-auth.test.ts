@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { bearerAuth } from '../src/security/auth.js';
+import { issueAccessToken } from '../src/security/token.js';
 
 function validEnv(): NodeJS.ProcessEnv {
   return {
@@ -60,7 +61,7 @@ describe('configuration', () => {
 describe('bearer auth', () => {
   it('rejects missing or incorrect credentials', () => {
     const token = validEnv().MCP_API_TOKEN!;
-    const middleware = bearerAuth(token);
+    const middleware = bearerAuth(token, 1);
     const next = vi.fn() as unknown as NextFunction;
     const status = vi.fn().mockReturnThis();
     const json = vi.fn().mockReturnThis();
@@ -77,12 +78,69 @@ describe('bearer auth', () => {
 
   it('accepts the configured bearer token', () => {
     const token = validEnv().MCP_API_TOKEN!;
-    const middleware = bearerAuth(token);
+    const middleware = bearerAuth(token, 1);
     const next = vi.fn() as unknown as NextFunction;
     const res = {} as Response;
     const req = { get: vi.fn().mockReturnValue(`Bearer ${token}`) } as unknown as Request;
 
     middleware(req, res, next);
     expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('accepts a validly issued access token', () => {
+    const token = validEnv().MCP_API_TOKEN!;
+    const { token: issued } = issueAccessToken(token, 'chatgpt', 1, 3600);
+    const middleware = bearerAuth(token, 1);
+    const next = vi.fn() as unknown as NextFunction;
+    const res = {} as Response;
+    const req = { get: vi.fn().mockReturnValue(`Bearer ${issued}`) } as unknown as Request;
+
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an issued token once the epoch is bumped', () => {
+    const token = validEnv().MCP_API_TOKEN!;
+    const { token: issued } = issueAccessToken(token, 'chatgpt', 1, 3600);
+    const middleware = bearerAuth(token, 2);
+    const next = vi.fn() as unknown as NextFunction;
+    const status = vi.fn().mockReturnThis();
+    const json = vi.fn().mockReturnThis();
+    const res = { status, json, setHeader: vi.fn() } as unknown as Response;
+    const req = { get: vi.fn().mockReturnValue(`Bearer ${issued}`) } as unknown as Request;
+
+    middleware(req, res, next);
+    expect(status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects an expired access token', () => {
+    const token = validEnv().MCP_API_TOKEN!;
+    const { token: issued } = issueAccessToken(token, 'chatgpt', 1, -1);
+    const middleware = bearerAuth(token, 1);
+    const next = vi.fn() as unknown as NextFunction;
+    const status = vi.fn().mockReturnThis();
+    const json = vi.fn().mockReturnThis();
+    const res = { status, json, setHeader: vi.fn() } as unknown as Response;
+    const req = { get: vi.fn().mockReturnValue(`Bearer ${issued}`) } as unknown as Request;
+
+    middleware(req, res, next);
+    expect(status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects a token signed with a different master secret', () => {
+    const token = validEnv().MCP_API_TOKEN!;
+    const { token: forged } = issueAccessToken('z'.repeat(64), 'attacker', 1, 3600);
+    const middleware = bearerAuth(token, 1);
+    const next = vi.fn() as unknown as NextFunction;
+    const status = vi.fn().mockReturnThis();
+    const json = vi.fn().mockReturnThis();
+    const res = { status, json, setHeader: vi.fn() } as unknown as Response;
+    const req = { get: vi.fn().mockReturnValue(`Bearer ${forged}`) } as unknown as Request;
+
+    middleware(req, res, next);
+    expect(status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
   });
 });

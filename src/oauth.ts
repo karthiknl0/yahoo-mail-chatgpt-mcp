@@ -2,11 +2,13 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { Router, json, urlencoded } from 'express';
 import rateLimit from 'express-rate-limit';
+import { issueAccessToken } from './security/token.js';
 
 interface PendingCode {
   redirectUri: string;
-  codeChallenge?: string;
+  codeChallenge: string;
   codeChallengeMethod: string;
+  clientId: string;
   expiresAt: number;
 }
 
@@ -81,7 +83,31 @@ function flexBody(req: Request, res: Response, next: NextFunction): void {
   }
 }
 
-export function createOAuthRouter(baseUrl: string, mcpApiToken: string): ReturnType<typeof Router> {
+export interface OAuthOptions {
+  redirectOrigins: string[];
+  tokenEpoch: number;
+  accessTokenTtlSeconds: number;
+}
+
+// An unrestricted redirect_uri turns this endpoint into an open redirector: an attacker
+// links a victim to a genuine-looking authorize page on this domain, and the auth code
+// (exchangeable for a token) lands on the attacker's host.
+function redirectUriAllowed(redirectUri: string, allowedOrigins: string[]): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(redirectUri);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:') return false;
+  return allowedOrigins.includes(parsed.origin);
+}
+
+export function createOAuthRouter(
+  baseUrl: string,
+  mcpApiToken: string,
+  options: OAuthOptions,
+): ReturnType<typeof Router> {
   const router = Router();
 
   // Tight rate limit on the authorize form to prevent offline brute-force of the token.
@@ -101,7 +127,7 @@ export function createOAuthRouter(baseUrl: string, mcpApiToken: string): ReturnT
       token_endpoint: `${baseUrl}/oauth/token`,
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code'],
-      code_challenge_methods_supported: ['S256', 'plain'],
+      code_challenge_methods_supported: ['S256'],
       token_endpoint_auth_methods_supported: ['none'],
     });
   });
@@ -113,8 +139,12 @@ export function createOAuthRouter(baseUrl: string, mcpApiToken: string): ReturnT
       res.status(400).json({ error: 'unsupported_response_type' });
       return;
     }
-    if (!q.redirect_uri) {
-      res.status(400).json({ error: 'invalid_request' });
+    if (!q.redirect_uri || !redirectUriAllowed(q.redirect_uri, options.redirectOrigins)) {
+      res.status(400).json({ error: 'invalid_request', error_description: 'redirect_uri not allowed' });
+      return;
+    }
+    if (!q.code_challenge || q.code_challenge_method !== 'S256') {
+      res.status(400).json({ error: 'invalid_request', error_description: 'PKCE S256 is required' });
       return;
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -124,6 +154,7 @@ export function createOAuthRouter(baseUrl: string, mcpApiToken: string): ReturnT
         state: q.state,
         code_challenge: q.code_challenge,
         code_challenge_method: q.code_challenge_method,
+        client_id: q.client_id,
       }),
     );
   });
@@ -135,10 +166,15 @@ export function createOAuthRouter(baseUrl: string, mcpApiToken: string): ReturnT
     urlencoded({ extended: false, limit: '4kb' }),
     (req, res) => {
       const b = req.body as Record<string, string>;
-      const { redirect_uri, state, code_challenge, code_challenge_method, token } = b;
+      const { redirect_uri, state, code_challenge, code_challenge_method, client_id, token } = b;
 
-      if (!redirect_uri) {
-        res.status(400).json({ error: 'invalid_request' });
+      // Re-validate: these arrive as form fields and are fully attacker-controllable.
+      if (!redirect_uri || !redirectUriAllowed(redirect_uri, options.redirectOrigins)) {
+        res.status(400).json({ error: 'invalid_request', error_description: 'redirect_uri not allowed' });
+        return;
+      }
+      if (!code_challenge || code_challenge_method !== 'S256') {
+        res.status(400).json({ error: 'invalid_request', error_description: 'PKCE S256 is required' });
         return;
       }
 
@@ -146,7 +182,7 @@ export function createOAuthRouter(baseUrl: string, mcpApiToken: string): ReturnT
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.status(401).send(
           loginPage(
-            { redirect_uri, state, code_challenge, code_challenge_method },
+            { redirect_uri, state, code_challenge, code_challenge_method, client_id },
             'Invalid token. Please try again.',
           ),
         );
@@ -156,10 +192,11 @@ export function createOAuthRouter(baseUrl: string, mcpApiToken: string): ReturnT
       const code = generateCode();
       const entry: PendingCode = {
         redirectUri: redirect_uri,
-        codeChallengeMethod: code_challenge_method ?? 'S256',
+        codeChallenge: code_challenge,
+        codeChallengeMethod: 'S256',
+        clientId: client_id ?? 'unknown',
         expiresAt: Date.now() + 5 * 60 * 1000,
       };
-      if (code_challenge) entry.codeChallenge = code_challenge;
       pendingCodes.set(code, entry);
 
       try {
@@ -199,22 +236,19 @@ export function createOAuthRouter(baseUrl: string, mcpApiToken: string): ReturnT
       res.status(400).json({ error: 'invalid_grant' });
       return;
     }
-    if (pending.codeChallenge) {
-      if (!code_verifier) {
-        res.status(400).json({ error: 'invalid_grant' });
-        return;
-      }
-      const ok =
-        pending.codeChallengeMethod === 'S256'
-          ? verifyS256(code_verifier, pending.codeChallenge)
-          : code_verifier === pending.codeChallenge;
-      if (!ok) {
-        res.status(400).json({ error: 'invalid_grant' });
-        return;
-      }
+    if (!code_verifier || !verifyS256(code_verifier, pending.codeChallenge)) {
+      res.status(400).json({ error: 'invalid_grant' });
+      return;
     }
 
-    res.json({ access_token: mcpApiToken, token_type: 'Bearer' });
+    // Issue a scoped, expiring token rather than handing out the master secret.
+    const { token, expiresIn } = issueAccessToken(
+      mcpApiToken,
+      pending.clientId,
+      options.tokenEpoch,
+      options.accessTokenTtlSeconds,
+    );
+    res.json({ access_token: token, token_type: 'Bearer', expires_in: expiresIn });
   });
 
   return router;

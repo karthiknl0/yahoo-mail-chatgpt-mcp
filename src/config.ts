@@ -20,6 +20,13 @@ const envSchema = z.object({
   IMAP_COMMAND_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(20000),
   TRUST_PROXY: z.coerce.number().int().min(0).max(10).default(0),
   PUBLIC_URL: z.string().url().optional(),
+  OAUTH_REDIRECT_ORIGINS: z
+    .string()
+    .default('https://chatgpt.com,https://claude.ai,https://claude.com'),
+  ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(300).max(31_536_000).default(7_776_000),
+  // Bump to invalidate every previously issued access token without rotating MCP_API_TOKEN.
+  TOKEN_EPOCH: z.coerce.number().int().min(1).default(1),
+  MAX_ATTACHMENT_BYTES: z.coerce.number().int().min(1024).max(52_428_800).default(10_485_760),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -79,5 +86,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     publicUrl:
       parsed.PUBLIC_URL ??
       `http://${parsed.HOST === '0.0.0.0' ? 'localhost' : parsed.HOST}:${parsed.PORT}`,
+    oauthRedirectOrigins: splitCsv(parsed.OAUTH_REDIRECT_ORIGINS),
+    accessTokenTtlSeconds: parsed.ACCESS_TOKEN_TTL_SECONDS,
+    tokenEpoch: parsed.TOKEN_EPOCH,
+    maxAttachmentBytes: parsed.MAX_ATTACHMENT_BYTES,
   } as const;
 }

@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
+import { verifyAccessToken } from './token.js';
 
 function constantTimeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
@@ -8,7 +9,9 @@ function constantTimeEqual(left: string, right: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-export function bearerAuth(expectedToken: string) {
+// Accepts the master MCP_API_TOKEN (used by the REST API and as break-glass) or a
+// signed, expiring token issued through the OAuth flow.
+export function bearerAuth(expectedToken: string, tokenEpoch: number) {
   if (expectedToken.length < 32) {
     throw new Error('MCP_API_TOKEN must contain at least 32 characters');
   }
@@ -16,11 +19,18 @@ export function bearerAuth(expectedToken: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const header = req.get('authorization') ?? '';
     const match = /^Bearer\s+(.+)$/i.exec(header);
-    if (!match?.[1] || !constantTimeEqual(match[1], expectedToken)) {
-      res.setHeader('WWW-Authenticate', 'Bearer');
-      res.status(401).json({ error: 'unauthorized' });
+    const presented = match?.[1];
+
+    if (
+      presented &&
+      (constantTimeEqual(presented, expectedToken) ||
+        verifyAccessToken(expectedToken, tokenEpoch, presented) !== null)
+    ) {
+      next();
       return;
     }
-    next();
+
+    res.setHeader('WWW-Authenticate', 'Bearer');
+    res.status(401).json({ error: 'unauthorized' });
   };
 }

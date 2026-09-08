@@ -242,6 +242,21 @@ export class YahooMailReader {
         let textContent: string | null = null;
         let extractionNote: string | null = null;
 
+        // Parse before truncation means a decompression bomb in a zip-container format
+        // (.docx/.xlsx) would run unbounded, so gate on raw size first.
+        const rawSize = buf?.length ?? att.size ?? 0;
+        if (rawSize > this.config.maxAttachmentBytes) {
+          results.push({
+            index: i,
+            filename,
+            contentType: ct,
+            size: rawSize,
+            textContent: null,
+            extractionNote: `Attachment is ${rawSize} bytes, above the ${this.config.maxAttachmentBytes}-byte extraction limit. Not parsed.`,
+          });
+          continue;
+        }
+
         try {
           if (ct.startsWith('text/')) {
             textContent = truncateSanitized(buf.toString('utf-8'), this.config.maxReadChars);
@@ -271,8 +286,9 @@ export class YahooMailReader {
           } else {
             extractionNote = `Content type "${ct}" is not supported for text extraction.`;
           }
-        } catch (err) {
-          extractionNote = `Extraction failed: ${err instanceof Error ? err.message : String(err)}`;
+        } catch {
+          // Parser messages can carry local paths; keep the detail server-side.
+          extractionNote = 'Extraction failed: the attachment could not be parsed.';
         }
 
         results.push({ index: i, filename, contentType: ct, size: att.size ?? buf?.length ?? 0, textContent, extractionNote });

@@ -15,6 +15,7 @@ import { YahooMailReader } from './yahoo.js';
 
 const config = loadConfig();
 const reader = new YahooMailReader(config);
+const requireAuth = bearerAuth(config.mcpApiToken, config.tokenEpoch);
 
 const handler = createMcpHandler(() => createYahooMcpServer(config), {
   responseMode: 'json',
@@ -245,7 +246,7 @@ function resolveAccount(query: qs.ParsedQs): { email: string; password: string }
   return config.accounts[idx];
 }
 
-app.get('/api/morning-brief', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.get('/api/morning-brief', limiter, requireAuth, async (req, res) => {
   const account = resolveAccount(req.query);
   const hours = Math.min(Math.max(Number(req.query.hours) || 24, 1), 168);
   const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), config.maxEmailsPerRequest);
@@ -258,7 +259,7 @@ app.get('/api/morning-brief', limiter, bearerAuth(config.mcpApiToken), async (re
   res.json(ranked);
 });
 
-app.get('/api/emails/search', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.get('/api/emails/search', limiter, requireAuth, async (req, res) => {
   const account = resolveAccount(req.query);
   const query = String(req.query.query ?? '').slice(0, 200);
   if (!query) { res.status(400).json({ error: 'query required' }); return; }
@@ -268,7 +269,7 @@ app.get('/api/emails/search', limiter, bearerAuth(config.mcpApiToken), async (re
   res.json(emails.map((m) => ({ ...m, accountEmail: account?.email, securityNotice: SECURITY_NOTICE })));
 });
 
-app.get('/api/emails/:uid', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.get('/api/emails/:uid', limiter, requireAuth, async (req, res) => {
   const account = resolveAccount(req.query);
   const uid = Number(req.params.uid);
   if (!Number.isInteger(uid) || uid <= 0) { res.status(400).json({ error: 'invalid uid' }); return; }
@@ -278,7 +279,7 @@ app.get('/api/emails/:uid', limiter, bearerAuth(config.mcpApiToken), async (req,
   res.json({ found: true, ...email, accountEmail: account?.email, securityNotice: SECURITY_NOTICE });
 });
 
-app.get('/api/emails', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.get('/api/emails', limiter, requireAuth, async (req, res) => {
   const account = resolveAccount(req.query);
   const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
   const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), config.maxEmailsPerRequest);
@@ -289,12 +290,12 @@ app.get('/api/emails', limiter, bearerAuth(config.mcpApiToken), async (req, res)
   res.json(emails.map((m) => ({ ...m, accountEmail: account?.email, securityNotice: SECURITY_NOTICE })));
 });
 
-app.get('/api/folders', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.get('/api/folders', limiter, requireAuth, async (req, res) => {
   const account = resolveAccount(req.query);
   res.json(await reader.listFolders(account));
 });
 
-app.get('/api/accounts', limiter, bearerAuth(config.mcpApiToken), (_req, res) => {
+app.get('/api/accounts', limiter, requireAuth, (_req, res) => {
   res.json(config.accounts.map((a, i) => ({ account: i + 1, email: a.email })));
 });
 
@@ -307,7 +308,7 @@ function parseUids(body: unknown): number[] | null {
   return nums;
 }
 
-app.post('/api/emails/mark-read', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.post('/api/emails/mark-read', limiter, requireAuth, async (req, res) => {
   const uids = parseUids(req.body);
   if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
   const account = resolveAccount(req.query);
@@ -316,7 +317,7 @@ app.post('/api/emails/mark-read', limiter, bearerAuth(config.mcpApiToken), async
   res.json({ ok: true, uids });
 });
 
-app.post('/api/emails/mark-unread', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.post('/api/emails/mark-unread', limiter, requireAuth, async (req, res) => {
   const uids = parseUids(req.body);
   if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
   const account = resolveAccount(req.query);
@@ -325,7 +326,7 @@ app.post('/api/emails/mark-unread', limiter, bearerAuth(config.mcpApiToken), asy
   res.json({ ok: true, uids });
 });
 
-app.post('/api/emails/flag', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.post('/api/emails/flag', limiter, requireAuth, async (req, res) => {
   const uids = parseUids(req.body);
   if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
   const account = resolveAccount(req.query);
@@ -334,7 +335,7 @@ app.post('/api/emails/flag', limiter, bearerAuth(config.mcpApiToken), async (req
   res.json({ ok: true, uids });
 });
 
-app.post('/api/emails/unflag', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.post('/api/emails/unflag', limiter, requireAuth, async (req, res) => {
   const uids = parseUids(req.body);
   if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
   const account = resolveAccount(req.query);
@@ -343,7 +344,7 @@ app.post('/api/emails/unflag', limiter, bearerAuth(config.mcpApiToken), async (r
   res.json({ ok: true, uids });
 });
 
-app.post('/api/emails/move', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.post('/api/emails/move', limiter, requireAuth, async (req, res) => {
   const uids = parseUids(req.body);
   if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
   const destination = String((req.body as Record<string, unknown>)?.destination ?? '').slice(0, 200);
@@ -354,7 +355,7 @@ app.post('/api/emails/move', limiter, bearerAuth(config.mcpApiToken), async (req
   res.json({ ok: true, uids, destination });
 });
 
-app.post('/api/emails/delete', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.post('/api/emails/delete', limiter, requireAuth, async (req, res) => {
   const uids = parseUids(req.body);
   if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
   const account = resolveAccount(req.query);
@@ -363,7 +364,7 @@ app.post('/api/emails/delete', limiter, bearerAuth(config.mcpApiToken), async (r
   res.json({ ok: true, uids, movedTo: 'Trash' });
 });
 
-app.post('/api/emails/archive', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.post('/api/emails/archive', limiter, requireAuth, async (req, res) => {
   const uids = parseUids(req.body);
   if (!uids) { res.status(400).json({ error: 'uids required (array of positive integers, max 50)' }); return; }
   const account = resolveAccount(req.query);
@@ -373,7 +374,7 @@ app.post('/api/emails/archive', limiter, bearerAuth(config.mcpApiToken), async (
 });
 
 // Single endpoint returning emails from ALL accounts — avoids GPT needing to loop
-app.get('/api/all-accounts/emails', limiter, bearerAuth(config.mcpApiToken), async (req, res) => {
+app.get('/api/all-accounts/emails', limiter, requireAuth, async (req, res) => {
   const folder = String(req.query.folder ?? 'INBOX').slice(0, 200);
   const limitPerAccount = Math.min(Math.max(Number(req.query.limit) || 5, 1), config.maxEmailsPerRequest);
   const unreadOnly = req.query.unreadOnly === 'true';
@@ -397,7 +398,13 @@ app.get('/api/all-accounts/emails', limiter, bearerAuth(config.mcpApiToken), asy
 });
 
 // OAuth 2.0 endpoints — must be before the bearer-gated /mcp route.
-app.use(createOAuthRouter(config.publicUrl, config.mcpApiToken));
+app.use(
+  createOAuthRouter(config.publicUrl, config.mcpApiToken, {
+    redirectOrigins: config.oauthRedirectOrigins,
+    tokenEpoch: config.tokenEpoch,
+    accessTokenTtlSeconds: config.accessTokenTtlSeconds,
+  }),
+);
 
 const BODY_LIMIT = 256 * 1024;
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH']);
@@ -428,7 +435,7 @@ app.all(
   '/mcp',
   limiter,
   enforceBodyLimit,
-  bearerAuth(config.mcpApiToken),
+  requireAuth,
   (req, res) => void nodeHandler(req, res, req.body),
 );
 
