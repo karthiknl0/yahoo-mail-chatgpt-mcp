@@ -70,6 +70,16 @@ Inputs:
 
 Output includes safe metadata such as UID, folder, sender, subject, timestamp, unread state, attachment presence, sanitized preview, category and importance score.
 
+### `get_all_accounts_morning_brief`
+
+Returns one bounded, sanitized result containing every configured Yahoo account. Each account is labeled with its email address and reports `ok` or `failed` independently. Scheduled morning and evening briefs should use this tool instead of making separate per-account calls, so a connector can discover one stable all-account action and preserve partial results when an account is unavailable.
+
+Inputs:
+
+- `hours`: 1–168, default 24
+- `limit`: bounded by `MAX_EMAILS_PER_REQUEST`, applied per account
+- `unreadOnly`: optional
+
 ### `list_emails`
 
 Lists sanitized mail summaries from a selected folder.
