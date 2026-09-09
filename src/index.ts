@@ -125,6 +125,18 @@ app.get('/openapi.json', (_req, res) => {
           responses: { '200': { description: 'Sanitized email detail' } },
         },
       },
+      '/api/all-accounts/morning-brief': {
+        get: {
+          operationId: 'getAllAccountsMorningBrief',
+          summary: 'Get morning/evening brief emails from ALL 3 Yahoo accounts sequentially — use this for scheduled briefs or when the user wants a summary across all accounts',
+          parameters: [
+            { name: 'hours', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 168, default: 24 } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 25, default: 10 }, description: 'Emails per account' },
+            { name: 'unreadOnly', in: 'query', schema: { type: 'boolean', default: false } },
+          ],
+          responses: { '200': { description: 'Array of { accountNumber, accountEmail, emails[] } for each account' } },
+        },
+      },
       '/api/all-accounts/emails': {
         get: {
           operationId: 'listAllAccountsEmails',
@@ -381,20 +393,18 @@ app.get('/api/all-accounts/emails', limiter, requireAuth, async (req, res) => {
   const hours = req.query.hours ? Math.min(Math.max(Number(req.query.hours), 1), 8760) : undefined;
   const since = hours ? new Date(Date.now() - hours * 60 * 60 * 1000) : undefined;
 
-  const results = await Promise.allSettled(
-    config.accounts.map(async (account, i) => {
+  const results: { accountNumber: number; accountEmail: string | undefined; emails: unknown[]; error?: string }[] = [];
+  for (let i = 0; i < config.accounts.length; i++) {
+    const account = config.accounts[i]!;
+    try {
       const emails = await reader.listEmails({ folder, limit: limitPerAccount, unreadOnly, account, ...(since ? { since } : {}) });
-      return { accountNumber: i + 1, accountEmail: account.email, emails: emails.map((m) => ({ ...m, securityNotice: SECURITY_NOTICE })) };
-    }),
-  );
+      results.push({ accountNumber: i + 1, accountEmail: account.email, emails: emails.map((m) => ({ ...m, securityNotice: SECURITY_NOTICE })) });
+    } catch {
+      results.push({ accountNumber: i + 1, accountEmail: account.email, error: 'fetch_failed', emails: [] });
+    }
+  }
 
-  res.json(
-    results.map((r, i) =>
-      r.status === 'fulfilled'
-        ? r.value
-        : { accountNumber: i + 1, accountEmail: config.accounts[i]?.email, error: 'fetch_failed', emails: [] },
-    ),
-  );
+  res.json(results);
 });
 
 // ChatGPT plugin manifest — required for ChatGPT to discover tool definitions.
@@ -423,6 +433,30 @@ app.get('/.well-known/ai-plugin.json', (_req, res) => {
     contact_email: 'admin@omshakthisilks.in',
     legal_info_url: `${config.publicUrl}/legal`,
   });
+});
+
+// Morning brief across ALL accounts — sequential to avoid Yahoo IMAP throttling
+app.get('/api/all-accounts/morning-brief', limiter, requireAuth, async (req, res) => {
+  const hours = Math.min(Math.max(Number(req.query.hours) || 24, 1), 168);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), config.maxEmailsPerRequest);
+  const unreadOnly = req.query.unreadOnly === 'true';
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+  const results: { accountNumber: number; accountEmail: string; emails: unknown[]; error?: string }[] = [];
+  for (let i = 0; i < config.accounts.length; i++) {
+    const account = config.accounts[i]!;
+    try {
+      const emails = await reader.listEmails({ since, limit: config.maxEmailsPerRequest, unreadOnly, account });
+      results.push({
+        accountNumber: i + 1,
+        accountEmail: account.email,
+        emails: emails.slice(0, limit).map((m) => ({ ...m, accountEmail: account.email, securityNotice: SECURITY_NOTICE })),
+      });
+    } catch {
+      results.push({ accountNumber: i + 1, accountEmail: account.email, error: 'fetch_failed', emails: [] });
+    }
+  }
+  res.json(results);
 });
 
 // OAuth 2.0 endpoints — must be before the bearer-gated /mcp route.
