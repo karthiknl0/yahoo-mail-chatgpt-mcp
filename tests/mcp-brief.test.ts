@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../src/config.js';
-import { getAllAccountsBrief } from '../src/mcp.js';
+import { createYahooMcpServer, getAllAccountsBrief } from '../src/mcp.js';
 import type { YahooMailReader } from '../src/yahoo.js';
 
 const config = {
@@ -24,6 +24,11 @@ const mail = {
 };
 
 describe('getAllAccountsBrief', () => {
+  it('registers the scheduler-safe tool name', () => {
+    const server = createYahooMcpServer(config);
+    expect(Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools)).toContain('get_all_accounts_morning_brief');
+  });
+
   it('returns separate bounded results and preserves account failures', async () => {
     const listEmails = vi
       .fn()
