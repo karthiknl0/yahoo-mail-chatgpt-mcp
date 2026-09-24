@@ -67,3 +67,52 @@ export function verifyAccessToken(
 
   return { clientId: payload.c };
 }
+
+// Refresh tokens use a distinct prefix and derived key so they can never be presented
+// as bearer credentials, and access tokens can never be exchanged as refresh tokens.
+const REFRESH_PREFIX = 'ymcpr1';
+
+function refreshSigningKey(masterSecret: string): Buffer {
+  return createHmac('sha256', masterSecret).update('mcp-refresh-token-v1').digest();
+}
+
+export function issueRefreshToken(
+  masterSecret: string,
+  clientId: string,
+  epoch: number,
+  ttlSeconds: number,
+): string {
+  const payload: TokenPayload = {
+    c: clientId.slice(0, 100),
+    e: epoch,
+    x: Math.floor(Date.now() / 1000) + ttlSeconds,
+  };
+  const body = `${REFRESH_PREFIX}.${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
+  return `${body}.${sign(refreshSigningKey(masterSecret), body)}`;
+}
+
+export function verifyRefreshToken(
+  masterSecret: string,
+  epoch: number,
+  token: string,
+): { clientId: string } | null {
+  const parts = token.split('.');
+  if (parts.length !== 3 || parts[0] !== REFRESH_PREFIX) return null;
+  const [, encoded, signature] = parts;
+  if (!encoded || !signature) return null;
+
+  if (!safeEqual(signature, sign(refreshSigningKey(masterSecret), `${REFRESH_PREFIX}.${encoded}`))) return null;
+
+  let payload: TokenPayload;
+  try {
+    payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf-8')) as TokenPayload;
+  } catch {
+    return null;
+  }
+
+  if (typeof payload.x !== 'number' || payload.x < Math.floor(Date.now() / 1000)) return null;
+  if (payload.e !== epoch) return null;
+  if (typeof payload.c !== 'string') return null;
+
+  return { clientId: payload.c };
+}

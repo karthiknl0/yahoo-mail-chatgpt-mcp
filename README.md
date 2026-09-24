@@ -1,6 +1,6 @@
 # Yahoo Mail ChatGPT MCP
 
-A security-first, **read-only** Yahoo Mail MCP server designed for use with ChatGPT and other MCP hosts.
+A security-first Yahoo Mail MCP server designed for use with ChatGPT, Claude and other MCP hosts. Reading is the default; a small set of reversible mailbox actions (mark read, flag, move, archive, move to Trash) is available and annotated so hosts can ask for confirmation.
 
 > **Status:** v0.1 foundation. Do not add real Yahoo credentials until CI is green and the deployment has been reviewed.
 
@@ -13,7 +13,7 @@ ChatGPT / MCP host
         v
 Remote MCP endpoint: /mcp
         |
-        | read-only tool calls
+        | tool calls (read + annotated mailbox actions)
         v
 Yahoo Mail reader
         |
@@ -30,7 +30,7 @@ This project treats mailbox data as high-risk. Yahoo mail may contain OTPs, pass
 
 The design therefore follows four rules:
 
-1. **Read only.** V1 contains no send, delete, move, archive, flag or mark-read tools.
+1. **Read first, no sending.** There is no send tool and nothing permanently deletes mail. Mailbox actions (mark read/unread, flag/unflag, move, archive, move to Trash) are marked with MCP tool annotations (`readOnlyHint`, `destructiveHint`) so the host can require user confirmation.
 2. **Fail closed.** The server refuses to start if Yahoo credentials or MCP authentication are missing or invalid.
 3. **Minimize output.** Tools return bounded summaries; full raw RFC822 messages are never exposed through MCP.
 4. **Sanitize before output.** OTPs, verification codes, sensitive login/reset URLs and long card/account-like numbers are redacted before data is returned to the MCP host.
@@ -54,11 +54,17 @@ The main threats considered are:
 
 Current mitigations include bearer authentication, constant-time token comparison, Host/Origin validation provided by the MCP Express integration, rate limiting, request-size checks, security headers, bounded tool inputs, TLS verification, read-only IMAP mailbox opens, deterministic sanitization and secret-free error responses.
 
-## What ChatGPT can access
+## What the MCP host can access
 
-V1 exposes only these MCP tools:
+### Read-only tools (`readOnlyHint: true`)
 
-### `get_morning_brief_emails`
+#### `get_voice_brief`
+
+Returns a short **plain-text** brief across every configured account, one line per email (sender, subject, unread/category). No JSON and no previews, so it is suited to voice conversations in ChatGPT or Claude.
+
+Inputs: `hours` (1–168, default 24), `limit` per account (1–10, default 5), `unreadOnly` (default `true`).
+
+#### `get_morning_brief_emails`
 
 Returns a small set of recent, sanitized emails prioritized for a morning brief.
 
@@ -70,7 +76,7 @@ Inputs:
 
 Output includes safe metadata such as UID, folder, sender, subject, timestamp, unread state, attachment presence, sanitized preview, category and importance score.
 
-### `get_all_accounts_morning_brief`
+#### `get_all_accounts_morning_brief`
 
 Returns one bounded, sanitized result containing every configured Yahoo account. Each account is labeled with its email address and reports `ok` or `failed` independently. Scheduled morning and evening briefs should use this tool instead of making separate per-account calls, so a connector can discover one stable all-account action and preserve partial results when an account is unavailable.
 
@@ -80,32 +86,25 @@ Inputs:
 - `limit`: bounded by `MAX_EMAILS_PER_REQUEST`, applied per account
 - `unreadOnly`: optional
 
-### `list_emails`
+#### `list_emails`, `search_emails`, `read_email`, `read_email_attachments`, `list_folders`
 
-Lists sanitized mail summaries from a selected folder.
+List, search and read sanitized, size-limited mail and attachment text, and list folder names.
 
-### `search_emails`
+### Mailbox actions (`readOnlyHint: false`)
 
-Performs a read-only Yahoo IMAP text search and returns sanitized summaries.
+| Tool | Annotation | Effect |
+|---|---|---|
+| `mark_as_read`, `mark_as_unread` | non-destructive | toggles the seen flag |
+| `flag_emails`, `unflag_emails` | non-destructive | toggles the star |
+| `move_emails`, `archive_emails` | non-destructive | moves mail between folders |
+| `delete_emails` | **destructive** | moves mail to Trash (recoverable in Yahoo) |
 
-### `read_email`
-
-Reads one email by UID. The text is sanitized and truncated before MCP output.
-
-### `list_folders`
-
-Lists mailbox folder names.
-
-## What ChatGPT cannot access in V1
+## What the MCP host cannot access
 
 There are deliberately **no** MCP tools for:
 
 - sending mail;
-- deleting mail;
-- archiving mail;
-- moving mail;
-- marking messages read/unread;
-- flagging/unflagging;
+- permanently deleting (expunging) mail;
 - changing Yahoo account settings;
 - retrieving the Yahoo app password;
 - retrieving environment variables;
@@ -235,7 +234,7 @@ Production checklist:
 - keep HTTPS enabled at all times;
 - do not enable request/body logging at the proxy;
 - rotate the MCP token and Yahoo app password after any suspected compromise;
-- keep V1 read-only.
+- keep the tool surface free of send and permanent-delete actions.
 
 ## Connecting to ChatGPT
 
@@ -250,6 +249,30 @@ The exact authentication options offered by ChatGPT can evolve. This repository 
 If your ChatGPT custom-app setup requires OAuth rather than a static bearer credential, **do not disable authentication**. Add or place a standards-compliant OAuth/OIDC layer in front of `/mcp` instead. OpenAI recommends refresh-token support when OAuth is used so connectivity can be maintained after access-token expiry.
 
 The server must never be changed to accept unauthenticated `/mcp` traffic merely to make a client connect.
+
+## Connecting to Claude
+
+Claude (claude.ai web, desktop and mobile apps) connects to remote MCP servers as **custom connectors**.
+
+1. Deploy with `PUBLIC_URL` set to the exact public HTTPS origin (for example `https://mcp.example.com`). `OAUTH_REDIRECT_ORIGINS` already includes `https://claude.ai` and `https://claude.com` by default; if you have overridden it, add them back.
+2. In Claude, open **Settings → Connectors → Add custom connector** and enter `https://mcp.example.com/mcp`.
+3. Claude discovers OAuth automatically:
+   - `/.well-known/oauth-protected-resource/mcp` (RFC 9728), also advertised in the `WWW-Authenticate` header of a 401;
+   - `/.well-known/oauth-authorization-server` (RFC 8414);
+   - `/register` for dynamic client registration (RFC 7591).
+4. When the browser opens the authorize page, paste your `MCP_API_TOKEN`. Claude receives a short-lived access token plus a refresh token, so it stays connected without re-entering the token.
+
+Leave **Advanced settings** (OAuth Client ID / Secret) empty; registration is automatic.
+
+Voice: whether custom connectors are available in voice conversations depends on the Claude app and plan. For spoken summaries ask for the voice brief (`get_voice_brief`), which returns short plain text instead of JSON.
+
+### OAuth tokens
+
+- Access tokens last `ACCESS_TOKEN_TTL_SECONDS` (default 90 days).
+- Refresh tokens last `REFRESH_TOKEN_TTL_SECONDS` (default 365 days) and are rotated on every refresh. They are signed with a separate key and cannot be used as bearer credentials.
+- Bump `TOKEN_EPOCH` to revoke every issued access **and** refresh token at once (all connected hosts must re-authorize).
+
+Existing ChatGPT connections are unaffected: the authorization-code flow, token format and master-token bearer access are unchanged. ChatGPT now also receives a refresh token, which it can use when its access token expires.
 
 ## Credential rotation
 
@@ -300,7 +323,7 @@ Application logs intentionally contain operational events only. Do not add loggi
 src/
   config.ts            fail-closed environment validation
   index.ts             HTTPS-facing MCP application entry point
-  mcp.ts               read-only MCP tool definitions
+  mcp.ts               MCP tool definitions and annotations
   yahoo.ts             Yahoo IMAP reader
   security/
     auth.ts             bearer authentication

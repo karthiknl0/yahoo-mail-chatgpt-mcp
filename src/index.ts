@@ -4,7 +4,6 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
-import type { ParsedQs } from 'qs';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import { loadConfig } from './config.js';
@@ -15,7 +14,11 @@ import { YahooMailReader } from './yahoo.js';
 
 const config = loadConfig();
 const reader = new YahooMailReader(config);
-const requireAuth = bearerAuth(config.mcpApiToken, config.tokenEpoch);
+const requireAuth = bearerAuth(
+  config.mcpApiToken,
+  config.tokenEpoch,
+  `${config.publicUrl.replace(/\/+$/, '')}/.well-known/oauth-protected-resource/mcp`,
+);
 
 const handler = createMcpHandler(() => createYahooMcpServer(config), {
   responseMode: 'json',
@@ -465,6 +468,7 @@ app.use(
     redirectOrigins: config.oauthRedirectOrigins,
     tokenEpoch: config.tokenEpoch,
     accessTokenTtlSeconds: config.accessTokenTtlSeconds,
+    refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
   }),
 );
 

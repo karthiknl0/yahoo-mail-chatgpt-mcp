@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { Router, json, urlencoded } from 'express';
 import rateLimit from 'express-rate-limit';
-import { issueAccessToken } from './security/token.js';
+import { issueAccessToken, issueRefreshToken, verifyRefreshToken } from './security/token.js';
 
 interface PendingCode {
   redirectUri: string;
@@ -87,6 +87,7 @@ export interface OAuthOptions {
   redirectOrigins: string[];
   tokenEpoch: number;
   accessTokenTtlSeconds: number;
+  refreshTokenTtlSeconds?: number;
 }
 
 // An unrestricted redirect_uri turns this endpoint into an open redirector: an attacker
@@ -109,9 +110,18 @@ export function createOAuthRouter(
   options: OAuthOptions,
 ): ReturnType<typeof Router> {
   const router = Router();
+  const refreshTokenTtlSeconds = options.refreshTokenTtlSeconds ?? 31_536_000;
 
   // Tight rate limit on the authorize form to prevent offline brute-force of the token.
   const authorizeLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'rate_limited' },
+  });
+
+  const registerLimiter = rateLimit({
     windowMs: 60_000,
     limit: 10,
     standardHeaders: true,
@@ -125,10 +135,68 @@ export function createOAuthRouter(
       issuer: baseUrl,
       authorization_endpoint: `${baseUrl}/oauth/authorize`,
       token_endpoint: `${baseUrl}/oauth/token`,
+      registration_endpoint: `${baseUrl}/register`,
       response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
       code_challenge_methods_supported: ['S256'],
-      token_endpoint_auth_methods_supported: ['none'],
+      token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
+    });
+  });
+
+  // RFC 9728 — OAuth 2.0 Protected Resource Metadata for the /mcp endpoint. Served at both
+  // the path-suffixed and root locations because clients probe either.
+  // Trailing slashes are trimmed here only; the existing issuer value is left untouched.
+  const resourceBase = baseUrl.replace(/\/+$/, '');
+  const protectedResourceMetadata = {
+    resource: `${resourceBase}/mcp`,
+    authorization_servers: [baseUrl],
+    bearer_methods_supported: ['header'],
+  };
+  router.get(
+    ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'],
+    (_req, res) => {
+      res.json(protectedResourceMetadata);
+    },
+  );
+
+  // RFC 7591 — Dynamic Client Registration (used by Claude custom connectors).
+  // Registration is stateless: the authorize step already gates on the MCP API token and
+  // the redirect_uri origin allowlist, so a client_id alone grants nothing. Registration
+  // still rejects redirect URIs outside the allowlist so misconfiguration fails early.
+  router.post('/register', registerLimiter, json({ limit: '8kb' }), (req, res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const redirectUris = b.redirect_uris;
+    if (
+      !Array.isArray(redirectUris) ||
+      redirectUris.length === 0 ||
+      redirectUris.length > 10 ||
+      !redirectUris.every((u) => typeof u === 'string' && redirectUriAllowed(u, options.redirectOrigins))
+    ) {
+      res.status(400).json({
+        error: 'invalid_redirect_uri',
+        error_description: 'redirect_uris must be HTTPS URLs on an allowed origin',
+      });
+      return;
+    }
+
+    const requestedAuth = b.token_endpoint_auth_method;
+    const authMethod =
+      requestedAuth === 'client_secret_post' || requestedAuth === 'client_secret_basic'
+        ? requestedAuth
+        : 'none';
+    const clientName = typeof b.client_name === 'string' ? b.client_name.slice(0, 100) : undefined;
+
+    res.status(201).json({
+      client_id: `dcr_${randomBytes(16).toString('base64url')}`,
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+      // A secret is issued only for clients that insist on one; the token endpoint relies on
+      // PKCE rather than client authentication, so it is not checked.
+      ...(authMethod === 'none' ? {} : { client_secret: randomBytes(32).toString('base64url'), client_secret_expires_at: 0 }),
+      redirect_uris: redirectUris,
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: authMethod,
+      ...(clientName ? { client_name: clientName } : {}),
     });
   });
 
@@ -216,6 +284,35 @@ export function createOAuthRouter(
     const b = req.body as Record<string, string>;
     const { grant_type, code, redirect_uri, code_verifier } = b;
 
+    if (grant_type === 'refresh_token') {
+      const presented = b.refresh_token;
+      const verified = presented
+        ? verifyRefreshToken(mcpApiToken, options.tokenEpoch, presented)
+        : null;
+      if (!verified || (b.client_id && b.client_id !== verified.clientId)) {
+        res.status(400).json({ error: 'invalid_grant' });
+        return;
+      }
+      const { token, expiresIn } = issueAccessToken(
+        mcpApiToken,
+        verified.clientId,
+        options.tokenEpoch,
+        options.accessTokenTtlSeconds,
+      );
+      res.json({
+        access_token: token,
+        token_type: 'Bearer',
+        expires_in: expiresIn,
+        refresh_token: issueRefreshToken(
+          mcpApiToken,
+          verified.clientId,
+          options.tokenEpoch,
+          refreshTokenTtlSeconds,
+        ),
+      });
+      return;
+    }
+
     if (grant_type !== 'authorization_code') {
       res.status(400).json({ error: 'unsupported_grant_type' });
       return;
@@ -248,7 +345,17 @@ export function createOAuthRouter(
       options.tokenEpoch,
       options.accessTokenTtlSeconds,
     );
-    res.json({ access_token: token, token_type: 'Bearer', expires_in: expiresIn });
+    res.json({
+      access_token: token,
+      token_type: 'Bearer',
+      expires_in: expiresIn,
+      refresh_token: issueRefreshToken(
+        mcpApiToken,
+        pending.clientId,
+        options.tokenEpoch,
+        refreshTokenTtlSeconds,
+      ),
+    });
   });
 
   return router;
