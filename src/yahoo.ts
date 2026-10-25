@@ -1,9 +1,6 @@
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>;
+import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 import type { AppConfig } from './config.js';
@@ -261,8 +258,19 @@ export class YahooMailReader {
           if (ct.startsWith('text/')) {
             textContent = truncateSanitized(buf.toString('utf-8'), this.config.maxReadChars);
           } else if (ct === 'application/pdf' || filename.toLowerCase().endsWith('.pdf')) {
-            const data = await pdfParse(buf);
-            textContent = truncateSanitized(data.text, this.config.maxReadChars);
+            if (buf.length < 5 || buf.subarray(0, 5).toString('ascii') !== '%PDF-') {
+              throw new Error('Invalid PDF signature');
+            }
+            const parser = new PDFParse({ data: new Uint8Array(buf) });
+            try {
+              const data = await parser.getText();
+              textContent = truncateSanitized(data.text || '', this.config.maxReadChars);
+              if (!textContent.trim()) {
+                extractionNote = 'PDF parsed but contains no extractable text; it may be image-only and need OCR.';
+              }
+            } finally {
+              await parser.destroy();
+            }
           } else if (
             ct === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
             filename.toLowerCase().endsWith('.docx')
